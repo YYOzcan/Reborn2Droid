@@ -24,7 +24,8 @@ The same build also runs as a native **Linux** program.
 |---|---|
 | Supported engine | Unity 3.x / 4.x **Mono** builds for `armeabi-v7a` (`libunity.so` + `libmono.so`) |
 | Output | Android 7.0 – 17+ (arm64-v8a, x86_64); Linux x86_64 |
-| Verified games | **Air Attack HD** 1.5.1 (Art In Games, Unity 3.5.7) — full speed (60 fps) on a Galaxy A52 |
+| Verified games | **Air Attack HD** 1.5.1 (Art In Games, Unity 3.5.7, armeabi-v7a) — 60 fps on a Galaxy A52 |
+| | **Battle Robots!** 1.5.1 (COLOPL, Unity 3.5.6, armeabi-vfp / ARMv5TE) |
 
 Reborn2Droid contains **no game code or data**. You provide your own APK; everything derived
 from it stays in `work/` on your machine and must not be redistributed.
@@ -69,6 +70,18 @@ original APK ──► libunity.so / libmono.so (32-bit ARM)
            ─ gles1_emu.cpp: GLES 1.1 fixed-function pipeline generated as GLSL on GLES 2.0
            ─ main_sdl.cpp: SDL2 host (window, GL context, touch, sensors, audio, lifecycle)
 ```
+
+## Game profiles
+
+`profiles/<package>/` holds optional per-game data (never game files):
+
+* `roots_libunity.txt`, `roots_libmono.txt` – extra recompiler entry points (speed);
+* `prefs.txt` – PlayerPrefs values pinned while playing, e.g. `int Coin 999` keeps an
+  in-game currency at its maximum (offline single-player games only).
+
+Classes of the game's own Java package and of common plugin SDKs (ads, analytics, social,
+billing, web views) are provided as logged stubs automatically, so their calls never crash the
+game; online features simply report "not available".
 
 See [docs/how-it-works.md](docs/how-it-works.md) for the details and
 [docs/adding-games.md](docs/adding-games.md) for bringing up a new game.

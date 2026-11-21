@@ -55,7 +55,7 @@ def inspect(apk):
     names = set(z.namelist())
     def big(p): return p in names and z.getinfo(p).file_size > 1 << 20
     libdir = None
-    for d in ("assets/libs/armeabi-v7a/", "lib/armeabi-v7a/", "assets/libs/armeabi/", "lib/armeabi/"):
+    for d in ("assets/libs/armeabi-v7a/", "lib/armeabi-v7a/", "assets/libs/armeabi-vfp/", "assets/libs/armeabi/", "lib/armeabi/"):
         if big(d + "libunity.so") and big(d + "libmono.so"): libdir = d; break
     if not libdir:
         if any(n.endswith("libil2cpp.so") for n in names): die("IL2CPP Unity games are not supported yet (only Mono builds)")
@@ -73,7 +73,11 @@ def inspect(apk):
     for block in re.split(r"\n\s*E: activity", xml)[1:]:
         n = re.search(r'A: http://schemas.android.com/apk/res/android:name\(0x[0-9a-f]+\)="([^"]+)"', block)
         o = re.search(r'screenOrientation\(0x[0-9a-f]+\)=(\d+)', block)
-        if n: activities.append((n.group(1), int(o.group(1)) if o else -1))
+        if n:
+            nm = n.group(1)
+            if nm.startswith("."): nm = pkg + nm
+            elif "." not in nm: nm = pkg + "." + nm
+            activities.append((nm, int(o.group(1)) if o else -1))
     act = "com.unity3d.player.UnityPlayerActivity"; orient = -1
     for n, o in activities:
         if "Proxy" in n or "Native" in n or "VideoPlayer" in n: continue
@@ -97,6 +101,16 @@ def write_profile(prof, wd):
          f'#define RB_PACKAGE "{prof["package"]}"\n#define RB_LABEL {json.dumps(prof["label"])}\n'
          f'#define RB_DATA_NAME "{data}"\n#define RB_ACTIVITY "{prof["activity"]}"\n'
          f'#define RB_GLES_MODE {prof["gles_mode"]}\n#define RB_SPLASH_MODE {prof["splash_mode"]}\n#define RB_ORIENTATION {o}\n')
+    pins = []
+    pf = os.path.join(HERE, "profiles", prof["package"], "prefs.txt")
+    if os.path.exists(pf):
+        for line in open(pf):
+            parts = line.split(None, 2)
+            if len(parts) == 3 and not parts[0].startswith("#") and parts[0] in ("int", "float", "string"):
+                pins.append("{%s, %s, %s}" % (json.dumps(parts[0][0]), json.dumps(parts[1]), json.dumps(parts[2].strip())))
+    libasset = prof["libdir"][len("assets/"):] if prof["libdir"].startswith("assets/") else "reborn2droid/"
+    h += f'#define RB_LIBDIR_ASSET "{libasset}"\n'
+    h += "#define RB_PREF_PINS {" + ", ".join(pins + ['{nullptr, nullptr, nullptr}']) + "}\n"
     p = os.path.join(wd, "profile.h")
     if not os.path.exists(p) or open(p).read() != h: open(p, "w").write(h)
 
@@ -245,6 +259,9 @@ def package_apk(apk, prof, wd, abis):
                 zo.write(os.path.join(TOOLS, "sdl-" + abi, "libSDL2.so"), f"lib/{abi}/libSDL2.so", zipfile.ZIP_DEFLATED)
             for it in z.infolist():                      # the original game data, untouched
                 if it.filename.startswith("assets/"): zo.writestr(it, z.read(it.filename), compress_type=it.compress_type)
+            if not prof["libdir"].startswith("assets/"):  # engine libraries shipped in lib/: keep them as data
+                for name, _ in LIBS.values():
+                    zo.writestr("assets/reborn2droid/" + name, z.read(prof["libdir"] + name), zipfile.ZIP_DEFLATED)
         aligned = os.path.join(tmp, "aligned.apk")
         run([os.path.join(bt, "zipalign"), "-f", "-P", "16", "4", unsigned, aligned])
         ks = os.path.join(HERE, "work", "reborn2droid.keystore")

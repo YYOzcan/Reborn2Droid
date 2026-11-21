@@ -1,0 +1,5 @@
+# PlayerPrefs values kept fixed while playing (type key value). Battle Robots!: coins, boosts and drops
+# (the counters show three digits, so 999 is the maximum).
+int Coin 999
+int Boost 999
+int Drop 999

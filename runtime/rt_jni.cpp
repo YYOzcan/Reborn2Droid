@@ -1,6 +1,7 @@
 // Guest-facing JNI: JNIEnv / JavaVM function tables whose entries are runtime traps.
 #include "jvm.h"
 #include "thread.h"
+#include "profile.h"
 #include <mutex>
 #include <unordered_map>
 #include <cstring>
@@ -329,11 +330,28 @@ static std::string cls_name(const std::string &n) {   // "java.lang.String" -> "
     std::string r = n; for (char &ch : r) if (ch == '.') ch = '/'; return r;
 }
 
+static bool lenient_namespace(const std::string &n) {
+    static std::string app = [] { std::string a = RB_PACKAGE; for (char &ch : a) if (ch == '.') ch = '/'; return a + "/"; }();
+    static const char *plugins[] = {"com/prime31/", "net/gree/", "com/facebook/", "com/google/android/gms/", "com/google/ads/",
+                                    "com/flurry/", "com/chartboost/", "com/tapjoy/", "com/playhaven/", "com/admob/", "com/millennialmedia/",
+                                    "com/inmobi/", "com/revmob/", "com/heyzap/", "com/vungle/", "com/applovin/", "com/bda/", "com/openfeint/",
+                                    "com/scoreloop/", "com/swarmconnect/", "com/papaya/", "com/unity3d/Plugin/", "com/android/vending/"};
+    if (n.rfind(app, 0) == 0) return true;
+    for (const char *p : plugins) if (n.rfind(p, 0) == 0) return true;
+    return false;
+}
+JClass *stub_class(const std::string &n) {        // the game's own Java classes and plugin SDKs: logged stubs
+    if (!lenient_namespace(n)) return nullptr;
+    JClass *k = def_class(n, "java/lang/Object", true);
+    logf("JNI: class %s is provided as a stub", n.c_str());
+    return k;
+}
 static void j_GetVersion(CPU *c) { RET(0x00010006); }
 static void j_FindClass(CPU *c) {
     std::string n = cls_name(GSTR(A(1)));
     JClass *k = find_class(n);
     if (!k && n[0] == '[') k = def_class(n);
+    if (!k) k = stub_class(n);
     if (!k) { throw_new("java/lang/NoClassDefFoundError", n); if (verbose) logf("JNI FindClass(%s): not found", n.c_str()); RET(0); return; }
     if (verbose > 1) logf("JNI FindClass(%s)", n.c_str());
     RET(to_handle(k->class_obj));

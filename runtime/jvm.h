@@ -64,6 +64,7 @@ struct JClass {
 // ---- registry
 JClass *def_class(const std::string &name, const std::string &super = "java/lang/Object", bool lenient = false);
 JClass *find_class(const std::string &name);     // nullptr if unknown
+JClass *stub_class(const std::string &name);     // lenient stub for app/plugin namespaces, else nullptr
 void def_method(JClass *k, const std::string &name, const std::string &sig, Impl impl, bool is_static = false);
 void def_static(JClass *k, const std::string &name, const std::string &sig, Impl impl);
 JField *def_field(JClass *k, const std::string &name, const std::string &sig, bool is_static, JV v = JV());

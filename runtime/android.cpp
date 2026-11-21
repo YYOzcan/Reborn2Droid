@@ -1,6 +1,7 @@
 // Android-only glue: pull the original ARM libraries out of our own APK's assets (AAssetManager).
 #ifdef __ANDROID__
 #include "rt.h"
+#include "profile.h"
 #include <SDL.h>
 #include <jni.h>
 #include <android/asset_manager.h>
@@ -18,7 +19,7 @@ std::string android_extract_libs() {
     std::string dir = std::string(SDL_AndroidGetInternalStoragePath()) + "/armlibs";
     mkdir(dir.c_str(), 0700);
     for (const char *name : {"libmono.so", "libunity.so"}) {
-        std::string src = std::string("libs/armeabi-v7a/") + name, dst = dir + "/" + name;
+        std::string src = std::string(RB_LIBDIR_ASSET) + name, dst = dir + "/" + name;
         AAsset *a = AAssetManager_open(am, src.c_str(), AASSET_MODE_STREAMING);
         if (!a) rt::fatal("asset %s missing from the APK", src.c_str());
         off_t len = AAsset_getLength(a);

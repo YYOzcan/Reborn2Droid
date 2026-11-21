@@ -114,6 +114,7 @@ static void def_android() {
     def_static(cls, "forName", "(Ljava/lang/String;)Ljava/lang/Class;", [](Obj *, Args &a) {
         std::string n = a[0].s(); for (char &ch : n) if (ch == '.') ch = '/';
         JClass *k = find_class(n);
+        if (!k) k = stub_class(n);
         if (!k) { throw_new("java/lang/ClassNotFoundException", n); return nul(); }
         return JV::O(k->class_obj);
     });
@@ -186,6 +187,16 @@ static void def_android() {
     def_method(loc, "toString", "()Ljava/lang/String;", [](Obj *s, Args &) { return str(s->str); });
     def_method(loc, "getLanguage", "()Ljava/lang/String;", [](Obj *s, Args &) { return str(s->str.substr(0, 2)); });
     def_method(loc, "getCountry", "()Ljava/lang/String;", [](Obj *s, Args &) { return str(s->str.size() > 3 ? s->str.substr(3, 2) : ""); });
+    def_method(loc, "getISO3Language", "()Ljava/lang/String;", [](Obj *s, Args &) {
+        static const char *t[][2] = {{"en", "eng"}, {"tr", "tur"}, {"de", "deu"}, {"fr", "fra"}, {"es", "spa"}, {"it", "ita"}, {"ja", "jpn"},
+                                     {"ko", "kor"}, {"zh", "zho"}, {"ru", "rus"}, {"pt", "por"}, {"nl", "nld"}, {"pl", "pol"}, {"ar", "ara"}};
+        std::string l = s->str.substr(0, 2);
+        for (auto &e : t) if (l == e[0]) return str(e[1]);
+        return str("eng");
+    });
+    def_method(loc, "getISO3Country", "()Ljava/lang/String;", [](Obj *s, Args &) { return str(s->str.size() > 3 ? s->str.substr(3, 2) : "USA"); });
+    def_method(loc, "getDisplayLanguage", "()Ljava/lang/String;", [](Obj *s, Args &) { return str(s->str.substr(0, 2)); });
+    def_method(loc, "getDisplayName", "()Ljava/lang/String;", [](Obj *s, Args &) { return str(s->str); });
     JClass *map = def_class("java/util/HashMap");
     def_method(map, "<init>", "()V", [](Obj *, Args &) { return nul(); });
     def_method(map, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", [](Obj *s, Args &a) { set_field(s, a[0].s(), a[1]); return nul(); });

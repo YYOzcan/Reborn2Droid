@@ -104,8 +104,14 @@ bool ploaded = false, pdirty = false;
 std::string pfile() { return files_dir + "/../shared_prefs.txt"; }
 std::string esc(const std::string &s) { std::string r; for (char c : s) { if (c == '\\') r += "\\\\"; else if (c == '\n') r += "\\n"; else if (c == '\t') r += "\\t"; else r += c; } return r; }
 std::string unesc(const std::string &s) { std::string r; for (size_t i = 0; i < s.size(); i++) { if (s[i] == '\\' && i + 1 < s.size()) { char n = s[++i]; r += n == 'n' ? '\n' : n == 't' ? '\t' : n; } else r += s[i]; } return r; }
+// profile "pins": PlayerPrefs entries forced to a value (in-game currencies kept at their maximum)
+struct Pin { const char *type, *key, *value; };
+const Pin pins[] = RB_PREF_PINS;
+const Pin *pin_of(const std::string &k) { for (const Pin *p = pins; p->key; p++) if (k == p->key) return p; return nullptr; }
+void apply_pins() { for (const Pin *p = pins; p->key; p++) pmap[p->key] = PV{p->type[0], p->value}; }
 void pload() {
     if (ploaded) return; ploaded = true;
+    struct AtEnd { ~AtEnd() { apply_pins(); } } at_end;
     std::ifstream f(pfile()); std::string line;
     while (std::getline(f, line)) {
         size_t a = line.find('\t'); if (a == std::string::npos || a != 1) continue;
@@ -118,11 +124,11 @@ int Prefs::get_int(const std::string &k, int d) { std::lock_guard<std::recursive
 float Prefs::get_float(const std::string &k, float d) { std::lock_guard<std::recursive_mutex> g(pmu); pload(); auto it = pmap.find(k); return it != pmap.end() && it->second.t == 'f' ? strtof(it->second.s.c_str(), nullptr) : d; }
 std::string Prefs::get_string(const std::string &k, const std::string &d) { std::lock_guard<std::recursive_mutex> g(pmu); pload(); auto it = pmap.find(k); return it != pmap.end() && it->second.t == 's' ? it->second.s : d; }
 bool Prefs::has(const std::string &k) { std::lock_guard<std::recursive_mutex> g(pmu); pload(); return pmap.count(k) != 0; }
-void Prefs::set_int(const std::string &k, int v) { std::lock_guard<std::recursive_mutex> g(pmu); pload(); pmap[k] = PV{'i', std::to_string(v)}; pdirty = true; }
-void Prefs::set_float(const std::string &k, float v) { std::lock_guard<std::recursive_mutex> g(pmu); pload(); char b[64]; snprintf(b, sizeof b, "%.9g", v); pmap[k] = PV{'f', b}; pdirty = true; }
-void Prefs::set_string(const std::string &k, const std::string &v) { std::lock_guard<std::recursive_mutex> g(pmu); pload(); pmap[k] = PV{'s', v}; pdirty = true; }
-void Prefs::remove(const std::string &k) { std::lock_guard<std::recursive_mutex> g(pmu); pload(); pmap.erase(k); pdirty = true; }
-void Prefs::clear() { std::lock_guard<std::recursive_mutex> g(pmu); pload(); pmap.clear(); pdirty = true; }
+void Prefs::set_int(const std::string &k, int v) { std::lock_guard<std::recursive_mutex> g(pmu); pload(); if (pin_of(k)) return; pmap[k] = PV{'i', std::to_string(v)}; pdirty = true; }
+void Prefs::set_float(const std::string &k, float v) { std::lock_guard<std::recursive_mutex> g(pmu); pload(); if (pin_of(k)) return; char b[64]; snprintf(b, sizeof b, "%.9g", v); pmap[k] = PV{'f', b}; pdirty = true; }
+void Prefs::set_string(const std::string &k, const std::string &v) { std::lock_guard<std::recursive_mutex> g(pmu); pload(); if (pin_of(k)) return; pmap[k] = PV{'s', v}; pdirty = true; }
+void Prefs::remove(const std::string &k) { std::lock_guard<std::recursive_mutex> g(pmu); pload(); if (pin_of(k)) return; pmap.erase(k); pdirty = true; }
+void Prefs::clear() { std::lock_guard<std::recursive_mutex> g(pmu); pload(); pmap.clear(); apply_pins(); pdirty = true; }
 void Prefs::sync() {
     std::lock_guard<std::recursive_mutex> g(pmu);
     if (!pdirty) return;
@@ -135,7 +141,7 @@ void Prefs::sync() {
 
 // =================================================================== GL loading
 static bool g_es = false, g_emu = false;
-namespace gles1 { bool init(void *(*get)(const char *)); void *lookup(const char *name, void *(*get)(const char *)); }
+namespace gles1 { bool init(void *(*get)(const char *)); void *lookup(const char *name, void *(*get)(const char *)); void set_program_cache(const std::string &path); }
 extern "C" { typedef void (*GLfn)(void); }
 static void my_glClearDepthf(float d) { typedef void (*F)(double); static F f = (F)SDL_GL_GetProcAddress("glClearDepth"); if (f) f(d); }
 static void my_glDepthRangef(float a, float b) { typedef void (*F)(double, double); static F f = (F)SDL_GL_GetProcAddress("glDepthRange"); if (f) f(a, b); }
@@ -326,6 +332,7 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
     SDL_GL_GetDrawableSize(win, &plat::width, &plat::height);
     { float d = 0; if (SDL_GetDisplayDPI(0, &d, nullptr, nullptr) == 0 && d > 0) plat::dpi = d; }
     if (g_emu && !gles1::init(gl_get_es2)) fatal("GLES 2.0 is required");
+    if (g_emu) gles1::set_program_cache(plat::cache_dir + "/gles1_programs.txt");   // compile what earlier runs needed, now
     gl_load_all(gl_get);
 #ifdef __ANDROID__
     { extern bool gl_emulate_constant; gl_emulate_constant = false;

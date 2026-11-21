@@ -93,6 +93,11 @@ static struct State {
     GLuint array_buf = 0;
 } S;
 static std::unordered_map<GLuint, GLenum> tex_format;    // texture -> base format (GL_ALPHA, GL_RGB, ...)
+static GLenum fmt_override[MAXU];                          // prewarming: formats come from the cached key
+static GLenum fmt_of(int u) {
+    if (fmt_override[u]) return fmt_override[u];
+    auto it = tex_format.find(S.bound_tex[u]); return it == tex_format.end() ? 0x1908 : it->second;
+}
 
 static Mat &cur_matrix() {
     if (S.matrix_mode == 0x1701) return S.proj;
@@ -155,7 +160,7 @@ static std::string state_key() {
     for (int u = 0; u < MAXU; u++) {
         if (!S.tex_on[u]) { k += "-"; continue; }
         const TexEnv &e = S.env[u];
-        GLenum fmt = tex_format.count(S.bound_tex[u]) ? tex_format[S.bound_tex[u]] : 0x1908;
+        GLenum fmt = fmt_of(u);
         snprintf(b, sizeof b, "T%d:%x:%x:%x:%x,%x,%x:%x,%x,%x:%x,%x,%x:%x,%x,%x:%g:%g:%d:%d|", u, e.mode, fmt, e.crgb, e.srgb[0], e.srgb[1], e.srgb[2],
                  e.orgb[0], e.orgb[1], e.orgb[2], e.salpha[0], e.salpha[1], e.salpha[2], e.oalpha[0], e.oalpha[1], e.oalpha[2] | (e.calpha << 16),
                  e.rgb_scale, e.alpha_scale, S.tc[u].on ? S.tc[u].size : 0, is_ident(S.tex[u]) ? 0 : 1);
@@ -246,7 +251,7 @@ static Program *build_program() {
     // all texture samples first (crossbar sources may read any unit)
     for (int u = 0; u < MAXU; u++) {
         if (!S.tex_on[u]) continue;
-        GLenum fmt = tex_format.count(S.bound_tex[u]) ? tex_format[S.bound_tex[u]] : 0x1908;
+        GLenum fmt = fmt_of(u);
         char b[256];
         // GLES1 texture base formats: ALPHA -> (0,0,0,A), LUMINANCE -> (L,L,L,1), LUMINANCE_ALPHA, RGB -> (.., 1)
         const char *sw = fmt == 0x1906 ? "vec4(0.0, 0.0, 0.0, s.a)" : fmt == 0x1909 ? "vec4(s.rrr, 1.0)" : fmt == 0x190A ? "vec4(s.rrr, s.a)"
@@ -259,7 +264,7 @@ static Program *build_program() {
     for (int u = 0; u < MAXU; u++) {
         if (!S.tex_on[u]) continue;
         const TexEnv &e = S.env[u];
-        GLenum fmt = tex_format.count(S.bound_tex[u]) ? tex_format[S.bound_tex[u]] : 0x1908;
+        GLenum fmt = fmt_of(u);
         std::string t = "t" + std::to_string(u), ec = "u_envc" + std::to_string(u);
         fs += "  { vec4 t = " + t + ";\n";
         switch (e.mode) {
@@ -353,10 +358,15 @@ static void setup_array(GLuint idx, const Array &a, bool normalized_default) {
     p_glEnableVertexAttribArray(idx);
 }
 
+static std::string cache_path;
 static void prepare_draw() {
     std::string key = state_key();
     Program *&pr = programs[key];
-    if (!pr) { pr = build_program(); if (rt::verbose) rt::logf("gles1: program %zu for %s", programs.size(), key.c_str()); }
+    if (!pr) {
+        pr = build_program();
+        if (rt::verbose) rt::logf("gles1: program %zu for %s", programs.size(), key.c_str());
+        if (!cache_path.empty()) { if (FILE *f = fopen(cache_path.c_str(), "a")) { fprintf(f, "%s\n", key.c_str()); fclose(f); } }
+    }
     p_glUseProgram(pr->id);
     Mat mvp = mul(S.proj, S.mv);
     p_glUniformMatrix4fv(pr->u_mvp, 1, 0, mvp.m);
@@ -395,6 +405,55 @@ static void prepare_draw() {
         else { p_glDisableVertexAttribArray(3 + u); p_glVertexAttrib4f(3 + u, S.texcoord[u][0], S.texcoord[u][1], S.texcoord[u][2], S.texcoord[u][3]); }
     }
     p_glBindBuffer(0x8892, S.array_buf);
+}
+
+// rebuild the pipeline state a key describes (inverse of state_key) so programs can be compiled ahead
+static bool state_from_key(const std::string &key) {
+    State st; GLenum fm[MAXU] = {0};
+    for (int u = 0; u < MAXU; u++) { st.tex[u] = ident(); st.texcoord[u][3] = 1; }
+    const char *p = key.c_str();
+    for (int u = 0; u < MAXU; u++) {
+        if (*p == '-') { p++; continue; }
+        int uu, tcs, tm; unsigned mode, fmt, crgb, s0, s1, s2, o0, o1, o2, a0, a1, a2, b0, b1, b2; float rs, as; int n = 0;
+        if (sscanf(p, "T%d:%x:%x:%x:%x,%x,%x:%x,%x,%x:%x,%x,%x:%x,%x,%x:%g:%g:%d:%d|%n", &uu, &mode, &fmt, &crgb, &s0, &s1, &s2, &o0, &o1, &o2,
+                   &a0, &a1, &a2, &b0, &b1, &b2, &rs, &as, &tcs, &tm, &n) != 20 || uu != u || !n) return false;
+        p += n;
+        st.tex_on[u] = true; fm[u] = fmt;
+        TexEnv &e = st.env[u]; e.mode = mode; e.crgb = crgb; e.srgb[0] = s0; e.srgb[1] = s1; e.srgb[2] = s2;
+        e.orgb[0] = o0; e.orgb[1] = o1; e.orgb[2] = o2; e.salpha[0] = a0; e.salpha[1] = a1; e.salpha[2] = a2;
+        e.oalpha[0] = b0; e.oalpha[1] = b1; e.oalpha[2] = b2 & 0xffff; e.calpha = b2 >> 16; e.rgb_scale = rs; e.alpha_scale = as;
+        st.tc[u].on = tcs != 0; st.tc[u].size = tcs ? tcs : 4;
+        if (tm) st.tex[u].m[0] = 2;               // only "not identity" matters for the key
+    }
+    int at, fo, co, no, li, cm, nn, ts; unsigned af, fm2; int n = 0;
+    if (sscanf(p, "A%d:%x F%d:%x C%d N%d L%d:%d:%d:%d%n", &at, &af, &fo, &fm2, &co, &no, &li, &cm, &nn, &ts, &n) != 10) return false;
+    p += n;
+    st.alpha_test = at; st.alpha_func = af; st.fog = fo; st.fog_mode = fm2; st.col.on = co; st.nrm.on = no;
+    st.lighting = li; st.color_material = cm; st.normalize = nn; st.two_side = ts;
+    int i, pt, sp;
+    while (sscanf(p, "|l%d:%d:%d%n", &i, &pt, &sp, &n) == 3 && i >= 0 && i < 8) {
+        p += n; st.light[i].on = true; st.light[i].pos[3] = pt ? 1.f : 0.f; st.light[i].spot_cut = sp ? 45.f : 180.f;
+    }
+    S = st; memcpy(fmt_override, fm, sizeof fm);
+    return true;
+}
+
+void set_program_cache(const std::string &path) {
+    cache_path = path;
+    FILE *f = fopen(path.c_str(), "r");
+    if (!f || !active) { if (f) fclose(f); return; }
+    State saved = S; char line[2048]; int n = 0;
+    while (fgets(line, sizeof line, f)) {
+        std::string key = line; while (!key.empty() && (key.back() == '\n' || key.back() == '\r')) key.pop_back();
+        if (key.empty() || programs.count(key)) continue;
+        if (!state_from_key(key)) { if (rt::verbose) rt::logf("gles1 cache: unparsed %s", key.c_str()); continue; }
+        if (state_key() != key) { if (rt::verbose) rt::logf("gles1 cache: mismatch\n  %s\n  %s", key.c_str(), state_key().c_str()); continue; }
+        programs[key] = build_program(); n++;
+    }
+    fclose(f);
+    S = saved; memset(fmt_override, 0, sizeof fmt_override);
+    p_glUseProgram(0);
+    rt::logf("gles1: %d shader programs prepared ahead", n);
 }
 
 // ---------------------------------------------------------------- GLES 1.1 API
