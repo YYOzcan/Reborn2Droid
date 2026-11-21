@@ -1,4 +1,4 @@
-# How Reborn64 works
+# How Reborn2Droid works
 
 ## 1. Static recompilation (`recomp/recomp.py`)
 

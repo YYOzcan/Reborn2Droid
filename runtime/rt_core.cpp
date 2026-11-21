@@ -44,12 +44,12 @@ static mspace heap;
 void fatal(const char *fmt, ...) {
     char msg[2048];
     va_list ap; va_start(ap, fmt); vsnprintf(msg, sizeof msg, fmt, ap); va_end(ap);
-    fprintf(stderr, "[reborn64] FATAL: %s\n", msg); fflush(stderr);
+    fprintf(stderr, "[reborn2droid] FATAL: %s\n", msg); fflush(stderr);
 #ifndef __ANDROID__
     { void *bt[40]; int n = backtrace(bt, 40); backtrace_symbols_fd(bt, n, 2); }
 #endif
 #ifdef __ANDROID__
-    __android_log_print(ANDROID_LOG_FATAL, "Reborn64", "FATAL: %s", msg);
+    __android_log_print(ANDROID_LOG_FATAL, "Reborn2Droid", "FATAL: %s", msg);
 #endif
     host::show_error(RB_LABEL, msg);
     abort();
@@ -58,9 +58,9 @@ void logf(const char *fmt, ...) {
     char msg[4096];
     va_list ap; va_start(ap, fmt); vsnprintf(msg, sizeof msg, fmt, ap); va_end(ap);
 #ifdef __ANDROID__
-    __android_log_print(ANDROID_LOG_INFO, "Reborn64", "%s", msg);
+    __android_log_print(ANDROID_LOG_INFO, "Reborn2Droid", "%s", msg);
 #else
-    fprintf(stderr, "[reborn64] %s\n", msg);
+    fprintf(stderr, "[reborn2droid] %s\n", msg);
 #endif
 }
 

@@ -1,4 +1,4 @@
-package org.reborn64;
+package org.reborn2droid;
 
 import android.graphics.Color;
 import android.os.Bundle;

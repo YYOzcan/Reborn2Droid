@@ -45,7 +45,7 @@ static std::string cpuinfo_text() {
     return "Processor\t: ARMv7 Processor rev 0 (v7l)\nprocessor\t: 0\nBogoMIPS\t: 1000.0\n"
            "Features\t: swp half thumb fastmult vfp edsp neon vfpv3 tls vfpv4 idiva idivt \n"
            "CPU implementer\t: 0x41\nCPU architecture: 7\nCPU variant\t: 0x0\nCPU part\t: 0xc0f\nCPU revision\t: 0\n\n"
-           "Hardware\t: Reborn64\nRevision\t: 0000\nSerial\t\t: 0000000000000000\n";
+           "Hardware\t: Reborn2Droid\nRevision\t: 0000\nSerial\t\t: 0000000000000000\n";
 }
 static int virtual_file(const std::string &p) {
     std::string text;

@@ -1,4 +1,4 @@
-# Reborn64
+# Reborn2Droid
 
 **Bring 32-bit ARM Android games back to life on modern 64-bit phones — and on Linux PCs.**
 
@@ -7,7 +7,7 @@ Many classic Android games stopped working years ago: they ship only 32-bit ARM 
 Android 11+. New phones (Pixel 7 and later, most 2024+ flagships, Android 17 devices) cannot
 run 32-bit code at all, and Android 14+ refuses to install apps built for very old API levels.
 
-Reborn64 takes the original APK you own and produces a new, modern APK:
+Reborn2Droid takes the original APK you own and produces a new, modern APK:
 
 * the game's 32-bit ARM engine libraries are **statically recompiled to C** and compiled
   natively for **arm64-v8a** and **x86_64** (no emulator, no 32-bit userspace needed);
@@ -26,28 +26,28 @@ The same build also runs as a native **Linux** program.
 | Output | Android 7.0 – 17+ (arm64-v8a, x86_64); Linux x86_64 |
 | Verified games | **Air Attack HD** 1.5.1 (Art In Games, Unity 3.5.7) — full speed (60 fps) on a Galaxy A52 |
 
-Reborn64 contains **no game code or data**. You provide your own APK; everything derived
+Reborn2Droid contains **no game code or data**. You provide your own APK; everything derived
 from it stays in `work/` on your machine and must not be redistributed.
 
 ## Quick start
 
 ```bash
-git clone https://github.com/YYOzcan/reborn64 && cd reborn64
+git clone https://github.com/YYOzcan/reborn2droid && cd reborn2droid
 export JAVA_HOME=/path/to/jdk-17-or-newer
 scripts/setup.sh                                   # NDK, SDK, SDL2, Python venv -> ./tools (once)
-python3 reborn64.py info  MyGame.apk               # check that the game is supported
-python3 reborn64.py build MyGame.apk               # -> work/<package>/out/<Game>-reborn64.apk
-python3 reborn64.py build MyGame.apk linux         # native Linux build (needs SDL2 + zlib dev packages)
+python3 reborn2droid.py info  MyGame.apk               # check that the game is supported
+python3 reborn2droid.py build MyGame.apk               # -> work/<package>/out/<Game>-reborn2droid.apk
+python3 reborn2droid.py build MyGame.apk linux         # native Linux build (needs SDL2 + zlib dev packages)
 ```
 
 Install the APK with `adb install` or copy it to the phone. It uses its own package name
-(`<original>.reborn64`), so it can sit next to the broken original. Saves live in the app's
+(`<original>.reborn2droid`), so it can sit next to the broken original. Saves live in the app's
 private storage.
 
 The Linux build runs the game straight from the APK:
 
 ```bash
-RB_LIBDIR=work/<package>/libs work/<package>/build/linux/reborn64 MyGame.apk
+RB_LIBDIR=work/<package>/libs work/<package>/build/linux/reborn2droid MyGame.apk
 ```
 
 Keys: mouse = touch, arrow keys = tilt, Esc = Android back, F11 = fullscreen.
@@ -58,7 +58,7 @@ Keys: mouse = touch, arrow keys = tilt, Esc = Android back, F11 = fullscreen.
 original APK ──► libunity.so / libmono.so (32-bit ARM)
                        │  recomp/recomp.py  (capstone; ARM, Thumb-2, VFP, NEON subset)
                        ▼
-                 ~30 000 C functions  ──► clang (NDK / host) ──► libmain.so / reborn64
+                 ~30 000 C functions  ──► clang (NDK / host) ──► libmain.so / reborn2droid
                        │
  runtime/  ─ guest memory (4 GB window, 32-bit pointers), ELF loader + relocations
            ─ interp.cpp: ARM interpreter for Mono JIT code, exception unwinding across host frames
@@ -81,9 +81,9 @@ recompiler missed), `RB_DUMP=10` (periodic guest thread dumps), `RB_GLTRACE=fram
 (use the GLES 1.1 emulation on the desktop too), `DEBUG=1` at build time (track the guest pc).
 
 Android (`adb shell setprop`): `debug.rb.verbose`, `debug.rb.fps 1` (FPS overlay), `debug.rb.gldebug`,
-`debug.rb.gltrace`, `debug.rb.nativegles1 1` (use the device's own GLES 1.1 driver). Logs: `adb logcat -s Reborn64`.
+`debug.rb.gltrace`, `debug.rb.nativegles1 1` (use the device's own GLES 1.1 driver). Logs: `adb logcat -s Reborn2Droid`.
 
 ## License
 
 MIT — see [LICENSE](LICENSE). SDL2 (zlib license) and dlmalloc (public domain) are used as-is.
-Game names and trademarks belong to their owners; Reborn64 is not affiliated with them.
+Game names and trademarks belong to their owners; Reborn2Droid is not affiliated with them.

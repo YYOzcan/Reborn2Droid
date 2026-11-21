@@ -152,8 +152,8 @@ static void def_android() {
     def_class("java/lang/Number");
 
     JClass *build = def_class("android/os/Build");
-    def_field(build, "MODEL", "Ljava/lang/String;", true, str("Reborn64"));
-    def_field(build, "MANUFACTURER", "Ljava/lang/String;", true, str("Reborn64"));
+    def_field(build, "MODEL", "Ljava/lang/String;", true, str("Reborn2Droid"));
+    def_field(build, "MANUFACTURER", "Ljava/lang/String;", true, str("Reborn2Droid"));
     def_field(build, "DEVICE", "Ljava/lang/String;", true, str("port"));
     def_field(build, "PRODUCT", "Ljava/lang/String;", true, str("port"));
     def_field(build, "BRAND", "Ljava/lang/String;", true, str("generic"));

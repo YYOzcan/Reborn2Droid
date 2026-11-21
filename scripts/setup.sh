@@ -1,5 +1,5 @@
 #!/bin/bash
-# Downloads and builds everything Reborn64 needs into ./tools (about 3 GB):
+# Downloads and builds everything Reborn2Droid needs into ./tools (about 3 GB):
 # Android NDK r27c, SDK command-line tools + platform 35 + build-tools 35, SDL2 2.32.10 (built for
 # arm64-v8a and x86_64) and a Python venv with capstone + pyelftools. Needs: curl, unzip, cmake,
 # ninja, clang, python3, a JDK 17+ (JAVA_HOME), and for Linux builds the SDL2 and zlib dev packages.

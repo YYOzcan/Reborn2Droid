@@ -270,7 +270,7 @@ static LONG WINAPI on_exc(EXCEPTION_POINTERS *e) {
 #include <dlfcn.h>
 #if defined(__ANDROID__)
 #include <android/log.h>
-#define BT_LOG(...) __android_log_print(ANDROID_LOG_ERROR, "Reborn64", __VA_ARGS__)
+#define BT_LOG(...) __android_log_print(ANDROID_LOG_ERROR, "Reborn2Droid", __VA_ARGS__)
 #else
 #define BT_LOG(...) (fprintf(stderr, __VA_ARGS__), fputc('\n', stderr))
 #endif
