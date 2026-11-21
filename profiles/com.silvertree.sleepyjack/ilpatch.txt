@@ -1,0 +1,5 @@
+# managed assembly                                       recipes (see ilpatch/Program.cs)
+# AES.Decrypt(Stream data, int size, key, iv) -> read `size` bytes (assets are pre-decrypted by prepare.py)
+assets/bin/Data/Managed/Assembly-CSharp-firstpass.dll  readexact:AES::Decrypt/4@0,1
+# AESFile.GenerateKeys(ZipFile) needs entries of the original APK; the keys are no longer used
+assets/bin/Data/Managed/Assembly-CSharp-firstpass.dll  return-new:AESFile::GenerateKeys/ZipFile

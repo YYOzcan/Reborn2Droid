@@ -337,6 +337,11 @@ static bool lenient_namespace(const std::string &n) {
                                     "com/inmobi/", "com/revmob/", "com/heyzap/", "com/vungle/", "com/applovin/", "com/bda/", "com/openfeint/",
                                     "com/scoreloop/", "com/swarmconnect/", "com/papaya/", "com/unity3d/Plugin/", "com/android/vending/"};
     if (n.rfind(app, 0) == 0) return true;
+    // the developer's own shared Java code next to the app package (com/vendor/framework/...)
+    static std::string vendor = [] { std::string a = app; size_t k = a.find('/'); k = k == std::string::npos ? k : a.find('/', k + 1);
+                                     std::string v = k == std::string::npos ? "" : a.substr(0, k + 1);
+                                     return (v == "com/google/" || v == "com/android/" || v == "com/unity3d/" || v == "android/" || v == "java/") ? "" : v; }();
+    if (!vendor.empty() && n.rfind(vendor, 0) == 0) return true;
     for (const char *p : plugins) if (n.rfind(p, 0) == 0) return true;
     return false;
 }

@@ -100,6 +100,11 @@ void prof_dump() {
     std::sort(v.rbegin(), v.rend());
     logf("interp profile: %llu samples, %.1f%% in library code", (unsigned long long)tot, tot ? 100.0 * stat / tot : 0.0);
     for (size_t k = 0; k < v.size() && k < 40; k++) logf("  %6.2f%% %s", 100.0 * v[k].first / tot, sym_name(v[k].second));
+    std::unordered_map<uint32_t, uint64_t> blk;                 // 1 KB blocks: roughly one JIT-compiled method each
+    for (auto &kv : prof_hist) blk[kv.first & ~0x3ffu] += kv.second;
+    std::vector<std::pair<uint64_t, uint32_t>> b; for (auto &kv : blk) b.push_back({kv.second, kv.first});
+    std::sort(b.rbegin(), b.rend());
+    for (size_t k = 0; k < b.size() && k < 25; k++) logf("  block %6.2f%% %08x", 100.0 * b[k].first / tot, b[k].second);
 }
 
 static void run(CPU *c, uint32_t pc, Activation *act);

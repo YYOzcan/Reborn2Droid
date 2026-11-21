@@ -20,6 +20,12 @@ void gl_trace(const char *name, CPU *c, int n) {
 }
 bool gl_desktop_es3 = false;               // set by the host: ETC1 must be uploaded as ETC2
 static uint32_t bound_array, bound_element;
+// pillarboxing (profile max_aspect): the game draws into a centred area gl_xoff pixels from the left
+int gl_xoff = 0;
+static uint32_t cur_fb = 0;
+void *gl_ptr_glViewport(); void *gl_ptr_glScissor(); void *gl_ptr_glBindFramebuffer(); void *gl_ptr_glBindFramebufferOES();
+void *gl_ptr_glIsEnabled(); void *gl_ptr_glEnable(); void *gl_ptr_glDisable(); void *gl_ptr_glClearColor(); void *gl_ptr_glClear();
+void *gl_ptr_glGetFloatv(); void *gl_ptr_glColorMask(); void *gl_ptr_glGetBooleanv();
 
 const void *gl_attrib_ptr(uint32_t p) { return bound_array ? (const void *)(uintptr_t)p : gl_in(p); }
 const void *gl_index_ptr(uint32_t p) { return bound_element ? (const void *)(uintptr_t)p : gl_in(p); }
@@ -79,6 +85,9 @@ IMP(glGetIntegerv) {
     if (pname == 0x0D53) { W32(A(1), 6); return; }                      // GL_GREEN_BITS
     if (pname == 0x84E2) { GLint n = 0; f(pname, &n); W32(A(1), n > 4 ? 4 : n); return; }   // GL_MAX_TEXTURE_UNITS: as on 2014 GPUs
     if (pname == 0x0D55) { W32(A(1), 0); return; }                      // GL_ALPHA_BITS
+    if ((pname == 0x0BA2 || pname == 0x0C10) && gl_xoff && !cur_fb) {   // GL_VIEWPORT / GL_SCISSOR_BOX in game coordinates
+        GLint v[4]; f(pname, v); v[0] -= gl_xoff; for (int k = 0; k < 4; k++) W32(A(1) + 4 * k, v[k]); return;
+    }
     if (pname == 0x8894) { W32(A(1), bound_array); return; }        // GL_ARRAY_BUFFER_BINDING
     if (pname == 0x8895) { W32(A(1), bound_element); return; }      // GL_ELEMENT_ARRAY_BUFFER_BINDING
     if (pname == 0x86A2 && gl_desktop_es3) {                        // GL_NUM_COMPRESSED_TEXTURE_FORMATS: add ETC1
@@ -202,4 +211,47 @@ IMP(glTexEnvi) {
         set_color(env_color[cur_unit]);
     }
     f(A(0), pname, v);
+}
+
+// ---- pillarboxing
+IMP(glViewport) {
+    if (gl_trace_on) gl_trace("glViewport", c, 4);
+    typedef void (*F)(GLint, GLint, GLint, GLint); F f = (F)gl_ptr_glViewport(); if (!f) return;
+    f((GLint)A(0) + (cur_fb ? 0 : gl_xoff), A(1), A(2), A(3));
+}
+IMP(glScissor) {
+    if (gl_trace_on) gl_trace("glScissor", c, 4);
+    typedef void (*F)(GLint, GLint, GLint, GLint); F f = (F)gl_ptr_glScissor(); if (!f) return;
+    f((GLint)A(0) + (cur_fb ? 0 : gl_xoff), A(1), A(2), A(3));
+}
+IMP(glBindFramebuffer) {
+    if (gl_trace_on) gl_trace("glBindFramebuffer", c, 2);
+    typedef void (*F)(GLenum, GLuint); F f = (F)gl_ptr_glBindFramebuffer(); if (!f) return;
+    cur_fb = A(1); f(A(0), A(1));
+}
+IMP(glBindFramebufferOES) {
+    if (gl_trace_on) gl_trace("glBindFramebufferOES", c, 2);
+    typedef void (*F)(GLenum, GLuint); F f = (F)gl_ptr_glBindFramebufferOES(); if (!f) return;
+    cur_fb = A(1); f(A(0), A(1));
+}
+// black side bars, drawn on the window framebuffer after the game's frame (GL state restored)
+void gl_draw_bars(int surf_w, int surf_h) {
+    if (!gl_xoff) return;
+    typedef void (*Fe)(GLenum); typedef GLboolean (*Fi)(GLenum); typedef void (*Fs)(GLint, GLint, GLint, GLint);
+    typedef void (*Fc)(GLfloat, GLfloat, GLfloat, GLfloat); typedef void (*Fcl)(GLenum); typedef void (*Fgf)(GLenum, GLfloat *);
+    typedef void (*Fgi)(GLenum, GLint *); typedef void (*Fm)(GLboolean, GLboolean, GLboolean, GLboolean); typedef void (*Fgb)(GLenum, GLboolean *);
+    typedef void (*Fb)(GLenum, GLuint);
+    Fe en = (Fe)gl_ptr_glEnable(), dis = (Fe)gl_ptr_glDisable(); Fi ie = (Fi)gl_ptr_glIsEnabled(); Fs sc = (Fs)gl_ptr_glScissor();
+    Fc cc = (Fc)gl_ptr_glClearColor(); Fcl cl = (Fcl)gl_ptr_glClear(); Fgf gf = (Fgf)gl_ptr_glGetFloatv(); Fgi gi = (Fgi)gl_ptr_glGetIntegerv();
+    Fm cm = (Fm)gl_ptr_glColorMask(); Fgb gb = (Fgb)gl_ptr_glGetBooleanv();
+    Fb bf = (Fb)(gl_ptr_glBindFramebuffer() ? gl_ptr_glBindFramebuffer() : gl_ptr_glBindFramebufferOES());
+    if (!en || !dis || !ie || !sc || !cc || !cl || !gf || !gi || !cm || !gb) return;
+    if (cur_fb && bf) bf(0x8D40, 0);
+    GLboolean sci = ie(0x0C11); GLint box[4]; gi(0x0C10, box); GLfloat col[4]; gf(0x0C22, col); GLboolean mask[4]; gb(0x0C23, mask);
+    en(0x0C11); cc(0, 0, 0, 1); cm(1, 1, 1, 1);
+    sc(0, 0, gl_xoff, surf_h); cl(0x4000);
+    sc(surf_w - gl_xoff, 0, gl_xoff + 1, surf_h); cl(0x4000);
+    cm(mask[0], mask[1], mask[2], mask[3]); cc(col[0], col[1], col[2], col[3]); sc(box[0], box[1], box[2], box[3]);
+    if (!sci) dis(0x0C11);
+    if (cur_fb && bf) bf(0x8D40, cur_fb);
 }

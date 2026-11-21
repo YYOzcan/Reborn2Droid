@@ -63,7 +63,25 @@ struct FmodDev {
     std::vector<int16_t> pending; size_t pos = 0;
 };
 FmodDev *fmod_dev;
-int fmod_info(int what) { return call_native(K_fmod, fmod_dev->self.get(), "fmodGetInfo", "(I)I", {JV::I(what)}).i(); }
+void fmod_fill(int16_t *out, int frames);
+int fmod_info(int what);
+// Unity 3.4: the Java player owns the FMOD output thread; FMOD reports its rate once the engine initialised it
+void fmod34_start(Obj *s) {
+    if (!fmod_dev) fmod_dev = new FmodDev();
+    fmod_dev->self = s->shared_from_this();
+    fmod_dev->running = true;
+    std::thread([] {
+        for (int k = 0; k < 6000 && fmod_dev->running; k++) {
+            int rate = fmod_info(0);
+            if (rate > 0) { logf("FMOD audio: %d Hz, block %d", rate, fmod_info(1)); plat::audio_start(rate, fmod_fill); return; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }).detach();
+}
+// Unity 3.5 registers fmodGetInfo/fmodProcess, Unity 3.4 the lower-case fmodgetinfo/fmodprocess
+static const char *fmod_n_info() { static const char *n = has_native(K_fmod, "fmodGetInfo", "(I)I") ? "fmodGetInfo" : "fmodgetinfo"; return n; }
+static const char *fmod_n_process() { static const char *n = has_native(K_fmod, "fmodProcess", "(Ljava/nio/ByteBuffer;)I") ? "fmodProcess" : "fmodprocess"; return n; }
+int fmod_info(int what) { return call_native(K_fmod, fmod_dev->self.get(), fmod_n_info(), "(I)I", {JV::I(what)}).i(); }
 void fmod_fill(int16_t *out, int frames) {
     FmodDev *d = fmod_dev;
     int need = frames * 2;
@@ -75,7 +93,7 @@ void fmod_fill(int16_t *out, int frames) {
             if (!block) { memset(out + k, 0, 2 * (need - k)); return; }
             if (block != d->block) { if (d->buf) gfree(d->buf); d->buf = gmalloc(block * 4); d->block = block; }
             Ref bb = new_direct_buffer(d->buf, block * 4);
-            call_native(K_fmod, d->self.get(), "fmodProcess", "(Ljava/nio/ByteBuffer;)I", {JV::O(bb)});
+            call_native(K_fmod, d->self.get(), fmod_n_process(), "(Ljava/nio/ByteBuffer;)I", {JV::O(bb)});
             d->pending.assign((int16_t *)GPTR(d->buf), (int16_t *)GPTR(d->buf) + block * 2);
             d->pos = 0;
         }
@@ -88,6 +106,7 @@ void fmod_fill(int16_t *out, int frames) {
 
 // ================================================================== public helpers for the host loop
 namespace java {
+void fmod_start34() { Ref dev = new_obj(K_fmod); fmod34_start(dev.get()); static Ref keep; keep = dev; }
 Ref player() { return the_player; }
 JV player_native(const char *name, const char *sig, const Args &a) {
     return call_native(K_player, the_player.get(), name, sig, a);
@@ -407,6 +426,24 @@ static void def_unity() {
 
     // ---- FMOD audio output
     K_fmod = def_class("org/fmod/FMODAudioDevice");
+    def_method(K_fmod, "a", "()V", [](Obj *s, Args &) {          // Unity 3.4 (obfuscated start())
+        fmod34_start(s);
+        return nul();
+    });
+    def_method(K_fmod, "b", "()V", [](Obj *, Args &) { if (fmod_dev) fmod_dev->running = false; plat::audio_stop(); return nul(); });
+    if (0) def_method(K_fmod, "unused", "()V", [](Obj *s, Args &) {
+        if (!fmod_dev) fmod_dev = new FmodDev();
+        fmod_dev->self = s->shared_from_this();
+        fmod_dev->running = true;
+        std::thread([] {                                          // FMOD initialises later on the game thread
+            for (int k = 0; k < 2000 && fmod_dev->running; k++) {
+                int rate = fmod_info(0);
+                if (rate > 0) { logf("FMOD audio: %d Hz, block %d", rate, fmod_info(1)); plat::audio_start(rate, fmod_fill); return; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }).detach();
+        return nul();
+    });
     def_method(K_fmod, "<init>", "()V", [](Obj *s, Args &) {
         if (!fmod_dev) fmod_dev = new FmodDev();
         fmod_dev->self = s->shared_from_this();

@@ -26,6 +26,7 @@ The same build also runs as a native **Linux** program.
 | Output | Android 7.0 – 17+ (arm64-v8a, x86_64); Linux x86_64 |
 | Verified games | **Air Attack HD** 1.5.1 (Art In Games, Unity 3.5.7, armeabi-v7a) — 60 fps on a Galaxy A52 |
 | | **Battle Robots!** 1.5.1 (COLOPL, Unity 3.5.6, armeabi-vfp / ARMv5TE) — 60 fps, GC hitches removed |
+| | **Sleepy Jack** 9012 (Silvertree Media, Unity 3.4.2, armeabi-v7a, GLES 2) — encrypted asset bundle handled by the profile |
 
 Reborn2Droid contains **no game code or data**. You provide your own APK; everything derived
 from it stays in `work/` on your machine and must not be redistributed.
@@ -82,7 +83,15 @@ original APK ──► libunity.so / libmono.so (32-bit ARM)
   `reborn2droid.py build Game.apk --variant cheat` adds `prefs_cheat.txt` and produces a separate
   `…-cheat.apk` (same package, so it can replace the normal build and keep the save);
 * `patches.txt` – `lib vaddr old new` 32-bit word patches applied to the engine libraries before
-  recompilation (only when the old word matches), e.g. tuning the Boehm GC of old Mono builds.
+  recompilation (only when the old word matches), e.g. tuning the Boehm GC of old Mono builds;
+* `ilpatch.txt` – `assembly recipe…` method-body replacements in the game's managed DLLs
+  (`ilpatch/`, Mono.Cecil; needs the .NET SDK at build time), e.g. turning slow or APK-bound C# code
+  into a plain read;
+* `prepare.py` – `transform(zipfile) -> {entry: bytes}`: rewrites game assets (e.g. pre-decrypting
+  bundles whose key depends on the original APK). With `ilpatch.txt`/`prepare.py` the build writes a
+  patched copy of the game data, `work/<package>/game-data.apk`, used for Linux runs and the APK;
+* `options.txt` – `key value` lines; `max_aspect 1.7778` keeps wider phones at 16:9 with side bars
+  for games whose UI was laid out for 16:9.
 
 Built in for every game: libgcc's soft-float and 64-bit helpers (`__aeabi_fadd`, `__aeabi_dmul`,
 `__aeabi_f2iz`, …) exported by the engine libraries are replaced with host FPU code

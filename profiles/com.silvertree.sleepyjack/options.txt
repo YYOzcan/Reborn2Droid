@@ -1,0 +1,1 @@
+max_aspect 1.7778   # the game's UI is laid out for 16:9; wider phones get side bars

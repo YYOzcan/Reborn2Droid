@@ -99,3 +99,20 @@ NF(__ashldi3) { nat___aeabi_llsl(c); }  NF(__lshrdi3) { nat___aeabi_llsr(c); }  
 NF(__aeabi_lmul) { uint64_t a = ((uint64_t)c->r[1] << 32) | c->r[0], b = ((uint64_t)c->r[3] << 32) | c->r[2]; R64(c, a * b); }
 NF(__muldi3) { nat___aeabi_lmul(c); }
 }
+
+// ---- the same helpers when a library imports them from libc/libgcc instead of carrying a copy
+#include "rt.h"
+extern "C" { void nat___aeabi_idiv(CPU *); void nat___aeabi_uidiv(CPU *); void nat___aeabi_idivmod(CPU *);
+             void nat___aeabi_uidivmod(CPU *); void nat___aeabi_ldivmod(CPU *); void nat___aeabi_uldivmod(CPU *); }
+#define FWD(n) IMP(n) { nat_##n(c); }
+FWD(__aeabi_idiv) FWD(__aeabi_uidiv) FWD(__aeabi_idivmod) FWD(__aeabi_uidivmod) FWD(__aeabi_ldivmod) FWD(__aeabi_uldivmod)
+FWD(__aeabi_fadd) FWD(__aeabi_fsub) FWD(__aeabi_frsub) FWD(__aeabi_fmul) FWD(__aeabi_fdiv)
+FWD(__aeabi_fcmpeq) FWD(__aeabi_fcmplt) FWD(__aeabi_fcmple) FWD(__aeabi_fcmpge) FWD(__aeabi_fcmpgt) FWD(__aeabi_fcmpun)
+FWD(__aeabi_cfcmple) FWD(__aeabi_cfcmpeq) FWD(__aeabi_cfrcmple)
+FWD(__aeabi_f2iz) FWD(__aeabi_f2uiz) FWD(__aeabi_f2lz) FWD(__aeabi_f2ulz) FWD(__aeabi_i2f) FWD(__aeabi_ui2f) FWD(__aeabi_l2f) FWD(__aeabi_ul2f)
+FWD(__aeabi_f2d) FWD(__aeabi_d2f)
+FWD(__aeabi_dadd) FWD(__aeabi_dsub) FWD(__aeabi_drsub) FWD(__aeabi_dmul) FWD(__aeabi_ddiv)
+FWD(__aeabi_dcmpeq) FWD(__aeabi_dcmplt) FWD(__aeabi_dcmple) FWD(__aeabi_dcmpge) FWD(__aeabi_dcmpgt) FWD(__aeabi_dcmpun)
+FWD(__aeabi_cdcmple) FWD(__aeabi_cdcmpeq) FWD(__aeabi_cdrcmple)
+FWD(__aeabi_d2iz) FWD(__aeabi_d2uiz) FWD(__aeabi_d2lz) FWD(__aeabi_d2ulz) FWD(__aeabi_i2d) FWD(__aeabi_ui2d) FWD(__aeabi_l2d) FWD(__aeabi_ul2d)
+FWD(__aeabi_llsl) FWD(__aeabi_llsr) FWD(__aeabi_lasr) FWD(__aeabi_lmul)

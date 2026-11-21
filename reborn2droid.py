@@ -103,6 +103,13 @@ def write_profile(prof, wd):
          f'#define RB_PACKAGE "{prof["package"]}"\n#define RB_LABEL {json.dumps(prof["label"])}\n'
          f'#define RB_DATA_NAME "{data}"\n#define RB_ACTIVITY "{prof["activity"]}"\n'
          f'#define RB_GLES_MODE {prof["gles_mode"]}\n#define RB_SPLASH_MODE {prof["splash_mode"]}\n#define RB_ORIENTATION {o}\n')
+    opts = {}
+    of = os.path.join(HERE, "profiles", prof["package"], "options.txt")     # "key value" per line
+    if os.path.exists(of):
+        for line in open(of):
+            parts = line.split("#")[0].split()
+            if len(parts) == 2: opts[parts[0]] = parts[1]
+    h += f'#define RB_MAX_ASPECT {float(opts.get("max_aspect", 0))}f\n'      # pillarbox wider screens to this width/height
     pins = []
     files = [os.path.join(HERE, "profiles", prof["package"], "prefs.txt")]
     if prof.get("variant"): files.append(os.path.join(HERE, "profiles", prof["package"], f"prefs_{prof['variant']}.txt"))
@@ -155,13 +162,14 @@ def recompile(apk, prof, wd):
         d = os.path.join(gen, pfx); os.makedirs(d, exist_ok=True)
         roots = os.path.join(HERE, "profiles", prof["package"], f"roots_{name[:-3]}.txt")
         stamp = os.path.join(d, ".stamp")
-        if stale(stamp, os.path.join(libs, name), rc, roots):
+        rootsig = open(roots).read() if os.path.exists(roots) else ""      # also notices a removed roots file
+        if stale(stamp, os.path.join(libs, name), rc, roots) or open(stamp).read() != rootsig if os.path.exists(stamp) else True:
             print(f"== recompiling {name} (ARM -> C)", flush=True)
             for f in glob.glob(os.path.join(d, "*.c")): os.remove(f)
             with open(os.path.join(wd, f"recomp_{pfx}.log"), "w") as log:
                 cmd = [PY, rc, os.path.join(libs, name), d, pfx, hex(base)] + ([roots] if os.path.exists(roots) else [])
                 subprocess.run(cmd, stdout=log, check=True)
-            open(stamp, "w").close()
+            open(stamp, "w").write(rootsig)
     imp = os.path.join(gen, "imports_gen.c")
     txts = [os.path.join(gen, p, f"{p}_imports.txt") for p in LIBS]
     if stale(imp, *txts, os.path.join(HERE, "recomp/gen_imports.py")):
@@ -169,6 +177,59 @@ def recompile(apk, prof, wd):
     glg = os.path.join(gen, "rt_gl_gen.cpp")
     if stale(glg, os.path.join(HERE, "recomp/gen_gl.py")):
         run([sys.executable, os.path.join(HERE, "recomp/gen_gl.py"), glg])
+
+# ================================================================= game data patches
+def game_data(apk, prof):
+    """The APK the runtime reads the game data from. With profile data patches (ilpatch.txt: IL patches of the
+    managed assemblies; prepare.py: asset transforms) a patched copy is written to work/<pkg>/game-data.apk."""
+    pdir = os.path.join(HERE, "profiles", prof["package"])
+    ilp, prep = os.path.join(pdir, "ilpatch.txt"), os.path.join(pdir, "prepare.py")
+    if not os.path.exists(ilp) and not os.path.exists(prep): return apk
+    out = os.path.join(base_dir(prof), "game-data.apk")
+    if not stale(out, apk, ilp, prep, os.path.join(HERE, "ilpatch/Program.cs")): return out
+    print("== patching game data", flush=True)
+    z = zipfile.ZipFile(apk); repl = {}
+    if os.path.exists(prep):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("prepare", prep); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+        repl.update(mod.transform(z))
+    if os.path.exists(ilp):
+        recipes = {}
+        for line in open(ilp):
+            parts = line.split("#")[0].split()
+            if len(parts) >= 2: recipes.setdefault(parts[0], []).extend(parts[1:])
+        tool = os.path.join(HERE, "work", "ilpatch-bin", "ilpatch.dll")
+        dotnet = shutil.which("dotnet") or os.path.expanduser("~/.dotnet/dotnet")
+        env = dict(os.environ, DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1", DOTNET_ROLL_FORWARD="Major")
+        env.setdefault("DOTNET_ROOT", os.path.dirname(dotnet))
+        if stale(tool, os.path.join(HERE, "ilpatch/Program.cs")):
+            run([dotnet, "build", "-c", "Release", "-o", os.path.dirname(tool), os.path.join(HERE, "ilpatch")], env=env)
+        tmp = tempfile.mkdtemp(prefix="rb-il-")
+        try:
+            mdir = None
+            for entry in recipes:                 # the resolver needs the neighbouring assemblies
+                mdir = os.path.dirname(entry)
+            for it in z.infolist():
+                if mdir and it.filename.startswith(mdir + "/") and it.filename.endswith(".dll"):
+                    open(os.path.join(tmp, os.path.basename(it.filename)), "wb").write(z.read(it.filename))
+            for entry, rs in recipes.items():
+                src = os.path.join(tmp, os.path.basename(entry)); dst = src + ".patched"
+                run([dotnet, tool, src, dst] + rs, env=env)
+                repl[entry] = open(dst, "rb").read()
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    with zipfile.ZipFile(out + ".tmp", "w") as zo:
+        for it in z.infolist():
+            if it.filename.startswith("META-INF/"): continue
+            data = repl.pop(it.filename, None)
+            if data is None: zo.writestr(it, z.read(it.filename), compress_type=it.compress_type)
+            else:
+                ni = zipfile.ZipInfo(it.filename, it.date_time); ni.compress_type = zipfile.ZIP_STORED
+                zo.writestr(ni, data)
+        for name, data in repl.items(): zo.writestr(name, data, zipfile.ZIP_STORED)
+    run([os.path.join(build_tools(), "zipalign"), "-f", "-P", "16", "4", out + ".tmp", out])   # the engine maps stored entries
+    os.remove(out + ".tmp")
+    return out
 
 # ================================================================= compilation
 def toolchain(target):
@@ -326,17 +387,18 @@ def main():
     write_profile(prof, wd)
     print(f"== {prof['label']} ({prof['package']} {prof['version_name']}), engine libraries in {prof['libdir']}")
     recompile(apk, prof, base_dir(prof))
+    data_apk = game_data(apk, prof)
     abis = []
     for t in targets:
         if t == "android": abis += ["arm64-v8a", "x86_64"]
         elif t in ABI_TARGET.values(): abis.append({v: k for k, v in ABI_TARGET.items()}[t])
         elif t == "linux":
             b = compile_target(wd, "linux", base_dir(prof))
-            print(f"== linux: {b}\n   run: RB_LIBDIR={os.path.join(base_dir(prof), 'libs')} {b} {apk}")
+            print(f"== linux: {b}\n   run: RB_LIBDIR={os.path.join(base_dir(prof), 'libs')} {b} {data_apk}")
         else: die(f"unknown target {t}")
     for abi in abis: compile_target(wd, ABI_TARGET[abi], base_dir(prof))
     if abis:
-        out = package_apk(apk, prof, wd, abis)
+        out = package_apk(data_apk, prof, wd, abis)
         print(f"== {out} ({os.path.getsize(out) >> 20} MB)")
 
 if __name__ == "__main__":

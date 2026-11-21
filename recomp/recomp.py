@@ -137,9 +137,10 @@ def want(addr, thumb):
 for v, (n, sz, th) in funcs.items():
     if TEXT_LO <= v < TEXT_HI: want(v, th)
 # code pointers stored in data (vtables, init_array, callback tables): R_ARM_RELATIVE targets inside .text
-reldyn = elf.get_section_by_name(".rel.dyn")
+# .rel.dyn, or (old linkers) .rel.data.rel.ro / .rel.data / .rel.got ...
+reldyns = [sec for sec in elf.iter_sections() if sec["sh_type"] == "SHT_REL" and sec.name != ".rel.plt"]
 n_ptr = 0
-for r in reldyn.iter_relocations():
+for r in (r for sec in reldyns for r in sec.iter_relocations()):
     if r["r_info_type"] == 23:                                    # R_ARM_RELATIVE
         o = v2o(r["r_offset"])
         if o is None: continue
@@ -601,6 +602,8 @@ class Gen:
             self.out.append(f"  /* {a:x}: {i.mnemonic} {i.op_str} */ PC(BASE + 0x{a:x}u);")
             mark = len(self.out)
             try:
+                if i.writeback and any(x.type == A.ARM_OP_MEM and x.mem.base == A.ARM_REG_PC for x in i.operands):
+                    raise Unsupported("pc writeback (data)")       # literal pool decoded as code
                 opened = self.emit_cond_open()
                 self.one(i)
                 if opened: self.out.append("  }")
@@ -1038,6 +1041,24 @@ class Gen:
                     if base == "vld1": o.append(f"  memcpy(&c->d[{d}], GP(t + {n}), 8);")
                     else: o.append(f"  memcpy(GP(t + {n}), &c->d[{d}], 8);")
                     n += 8
+            if extra is not None and extra.type == A.ARM_OP_REG: o.append(f"  {self.R(b)} = t + {self.R(rn(extra))};")
+            elif i.writeback: o.append(f"  {self.R(b)} = t + {n};")
+            return
+        if base in ("vld2", "vst2", "vld3", "vst3", "vld4", "vst4"):
+            # structure load/store, 32-bit elements, all lanes: reg r lane l <-> word l*N + r
+            if dt not in (["32"], ["f32"], ["i32"]): raise Unsupported("neon struct size")
+            mi = next(k for k, x in enumerate(ops) if x.type == A.ARM_OP_MEM)
+            regs = [int(rn(x)[1:]) for x in ops[:mi]]; extra = ops[mi + 1] if len(ops) > mi + 1 else None
+            N = int(base[3]); 
+            if len(regs) != N or any(getattr(x, "vector_index", -1) not in (None, -1) for x in ops[:mi]): raise Unsupported("neon struct form")
+            b = i.reg_name(ops[mi].mem.base)
+            o.append(f"  t = {self.R(b)};")
+            for l in range(2):
+                for r_, d in enumerate(regs):
+                    off = 4 * (l * N + r_)
+                    if base.startswith("vld"): o.append(f"  c->su[{2 * d + l}] = R32(t + {off});")
+                    else: o.append(f"  W32(t + {off}, c->su[{2 * d + l}]);")
+            n = 8 * N
             if extra is not None and extra.type == A.ARM_OP_REG: o.append(f"  {self.R(b)} = t + {self.R(rn(extra))};")
             elif i.writeback: o.append(f"  {self.R(b)} = t + {n};")
             return

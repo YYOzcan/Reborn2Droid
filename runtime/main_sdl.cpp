@@ -24,7 +24,7 @@
 
 using namespace rt;
 
-namespace java { jni::Ref player(); jni::JV player_native(const char *n, const char *s, const jni::Args &a); bool player_has(const char *n, const char *s); jni::Ref prefs_object(); }
+namespace java { void fmod_start34(); jni::Ref player(); jni::JV player_native(const char *n, const char *s, const jni::Args &a); bool player_has(const char *n, const char *s); jni::Ref prefs_object(); }
 extern bool gl_desktop_es3;
 
 // =================================================================== platform services
@@ -159,6 +159,7 @@ static void *gl_get_es2(const char *name) {
 static void *gl_get_emu(const char *name) { return gles1::lookup(name, gl_get_es2); }
 static void *gl_get(const char *name) {
     if (g_emu) return gl_get_emu(name);
+    if (RB_GLES_MODE == 2) return gl_get_es2(name);   // GLES 2 game on a GLES 2 context
 #ifdef __ANDROID__
     // the emulator's GLES 1 translator has no glDeleteFramebuffersOES behind its dispatch stub
     static bool emu = [] { typedef const char *(*GS)(unsigned); void *l = dlopen("libGLESv1_CM.so", RTLD_NOW);
@@ -194,6 +195,17 @@ static void *gl_get(const char *name) {
 
 // =================================================================== Unity driving
 static jni::JV P(const char *n, const char *s, const jni::Args &a = {}) { return java::player_native(n, s, a); }
+// profile max_aspect: on wider screens the game gets a centred area of that aspect ratio (black side bars)
+extern int gl_xoff; void gl_draw_bars(int surf_w, int surf_h);
+static int surf_w, surf_h;
+static void apply_aspect() {
+    surf_w = plat::width; surf_h = plat::height; gl_xoff = 0;
+    float ma = RB_MAX_ASPECT;
+    if (ma > 0 && surf_h > 0 && surf_w > surf_h && (float)surf_w / surf_h > ma + 0.01f) {
+        int gw = (int)(surf_h * ma + 0.5f) & ~1;
+        gl_xoff = (surf_w - gw) / 2; plat::width = gw;
+    }
+}
 using jni::JV;
 
 static void touch(int id, float x, float y, int action, int64_t t_ms) {
@@ -258,6 +270,7 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
     std::string home = env_or("HOME", "/tmp");
     plat::data_dir = env_or("RB_DATA", env_or("XDG_DATA_HOME", home + "/.local/share") + "/" RB_DATA_NAME);
     plat::apk_path = argc > 1 ? argv[1] : env_or("RB_APK", "");
+    { char *rp = realpath(plat::apk_path.c_str(), nullptr); if (rp) { plat::apk_path = rp; free(rp); } }   // engines build paths from it
     if (plat::apk_path.empty()) { fprintf(stderr, "usage: %s <game.apk>\n", argv[0]); return 2; }
 #endif
     plat::files_dir = plat::data_dir + "/files";
@@ -286,14 +299,21 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS | SDL_INIT_SENSOR) != 0) fatal("SDL_Init: %s", SDL_GetError());
 #ifdef __ANDROID__
-    g_es = true; g_emu = true;
+    g_es = true; g_emu = RB_GLES_MODE != 2;           // GLES 2 games talk to the driver directly
     { char v[92] = {0}; if (__system_property_get("debug.rb.nativegles1", v) > 0 && atoi(v)) g_emu = false; }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, g_emu ? 2 : 1);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, g_emu ? 0 : 1);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, g_emu || RB_GLES_MODE == 2 ? 2 : 1);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, g_emu || RB_GLES_MODE == 2 ? 0 : 1);
     Uint32 wflags = SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_ALLOW_HIGHDPI;
 #else
-    if (getenv("RB_GLES2EMU")) {                  // dev: GLES 2.0 context + our GLES 1.1 emulation, like on Android
+    if (RB_GLES_MODE == 2 && !getenv("RB_DESKTOPGL")) {   // GLES 2 game: a real ES 2.0 context (EGL), as on phones
+        g_es = true;
+        SDL_SetHint(SDL_HINT_VIDEO_X11_FORCE_EGL, "1");
+        SDL_SetHint(SDL_HINT_OPENGL_ES_DRIVER, "1");
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    } else if (getenv("RB_GLES2EMU")) {           // dev: GLES 2.0 context + our GLES 1.1 emulation, like on Android
         g_es = true; g_emu = true;
         SDL_SetHint(SDL_HINT_VIDEO_X11_FORCE_EGL, "1");
         SDL_SetHint(SDL_HINT_OPENGL_ES_DRIVER, "1");
@@ -330,6 +350,7 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
       SDL_GL_GetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, &prof); logf("GL context %p (version %d.%d profile %d)", ctx, maj, mn, prof); }
     SDL_GL_SetSwapInterval(getenv("RB_NOVSYNC") ? 0 : 1);
     SDL_GL_GetDrawableSize(win, &plat::width, &plat::height);
+    apply_aspect();
     { float d = 0; if (SDL_GetDisplayDPI(0, &d, nullptr, nullptr) == 0 && d > 0) plat::dpi = d; }
     if (g_emu && !gles1::init(gl_get_es2)) fatal("GLES 2.0 is required");
     if (g_emu) gles1::set_program_cache(plat::cache_dir + "/gles1_programs.txt");   // compile what earlier runs needed, now
@@ -377,11 +398,19 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
     P("initJni", "()V");
     jni::call_native(jni::find_class("com/unity3d/player/PlayerPrefs"), java::prefs_object().get(), "InitPlayerPrefs", "()V", {});
     P("nativeInitWWW", "(Ljava/lang/Class;)V", {JV::O(jni::find_class("com/unity3d/player/WWW")->class_obj)});
+    const bool u34 = java::player_has("nativeInit", "(I[BIIIII)V");     // Unity 3.4: splash pixels passed in
+    if (u34) {
+        // nativeInit(glesMode, RGB565 splash, texW, texH, w, h, splashMode): a black 2x2 splash
+        jni::Ref px = jni::new_prim_array('B', 8);
+        P("nativeInit", "(I[BIIIII)V", {JV::I(RB_GLES_MODE), JV::O(px), JV::I(2), JV::I(2), JV::I(2), JV::I(2), JV::I(RB_SPLASH_MODE)});
+        // the 3.4 Java player creates and starts the FMOD output thread itself
+        java::fmod_start34();
+    } else
     P("nativeInit", "(II)V", {JV::I(RB_GLES_MODE), JV::I(RB_SPLASH_MODE)});   // from the game's settings.xml
     P("nativeSetExtras", "(Landroid/os/Bundle;)V", {JV()});
     P("nativeRecreateGfxState", "()V");                        // onSurfaceCreated
     P("nativeResize", "(IIII)V", {JV::I(plat::width), JV::I(plat::height), JV::I(plat::width), JV::I(plat::height)});
-    P("nativeFocusChanged", "(Z)V", {JV::Z(true)});
+    if (!u34) P("nativeFocusChanged", "(Z)V", {JV::Z(true)});
 
     bool started = false;
     int frame = 0;
@@ -407,29 +436,30 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
             case SDL_WINDOWEVENT:
                 if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || ev.window.event == SDL_WINDOWEVENT_RESIZED) {
                     SDL_GL_GetDrawableSize(win, &plat::width, &plat::height);
+                    apply_aspect();
                     P("nativeResize", "(IIII)V", {JV::I(plat::width), JV::I(plat::height), JV::I(plat::width), JV::I(plat::height)});
-                } else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) P("nativeFocusChanged", "(Z)V", {JV::Z(true)});
-                else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) P("nativeFocusChanged", "(Z)V", {JV::Z(false)});
+                } else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) { if (!u34) P("nativeFocusChanged", "(Z)V", {JV::Z(true)}); }
+                else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) { if (!u34) P("nativeFocusChanged", "(Z)V", {JV::Z(false)}); }
                 break;
             case SDL_APP_WILLENTERBACKGROUND:
-                if (started) { P("nativePause", "()Z"); plat::audio_pause(true); plat::Prefs::sync(); }
+                if (started) { if (u34) P("nativePause", "()V"); else P("nativePause", "()Z"); plat::audio_pause(true); plat::Prefs::sync(); }
                 break;
             case SDL_APP_DIDENTERFOREGROUND:
                 if (started) { plat::audio_pause(false); P("nativeResume", "()V"); }
                 break;
             case SDL_MOUSEBUTTONDOWN:
-                if (ev.button.button == SDL_BUTTON_LEFT && started) { mouse_down = true; touch(0, (float)ev.button.x * plat::width / std::max(1, ww), (float)ev.button.y * plat::height / std::max(1, wh), 0, now); }
+                if (ev.button.button == SDL_BUTTON_LEFT && started) { mouse_down = true; touch(0, (float)ev.button.x * surf_w / std::max(1, ww) - gl_xoff, (float)ev.button.y * plat::height / std::max(1, wh), 0, now); }
                 break;
             case SDL_MOUSEBUTTONUP:
-                if (ev.button.button == SDL_BUTTON_LEFT && mouse_down) { mouse_down = false; touch(0, (float)ev.button.x * plat::width / std::max(1, ww), (float)ev.button.y * plat::height / std::max(1, wh), 1, now); }
+                if (ev.button.button == SDL_BUTTON_LEFT && mouse_down) { mouse_down = false; touch(0, (float)ev.button.x * surf_w / std::max(1, ww) - gl_xoff, (float)ev.button.y * plat::height / std::max(1, wh), 1, now); }
                 break;
             case SDL_MOUSEMOTION:
-                if (mouse_down) touch(0, (float)ev.motion.x * plat::width / std::max(1, ww), (float)ev.motion.y * plat::height / std::max(1, wh), 2, now);
+                if (mouse_down) touch(0, (float)ev.motion.x * surf_w / std::max(1, ww) - gl_xoff, (float)ev.motion.y * plat::height / std::max(1, wh), 2, now);
                 break;
             case SDL_FINGERDOWN: case SDL_FINGERUP: case SDL_FINGERMOTION: {
                 if (!started) break;
                 int act = ev.type == SDL_FINGERDOWN ? 0 : ev.type == SDL_FINGERUP ? 1 : 2;
-                touch((int)(ev.tfinger.fingerId & 0xff), ev.tfinger.x * plat::width, ev.tfinger.y * plat::height, act, now);
+                touch((int)(ev.tfinger.fingerId & 0xff), ev.tfinger.x * surf_w - gl_xoff, ev.tfinger.y * plat::height, act, now);
                 break;
             }
             case SDL_KEYDOWN: case SDL_KEYUP: {
@@ -437,7 +467,10 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
                 SDL_Keycode k = ev.key.keysym.sym;
                 if (k == SDLK_AC_BACK || k == SDLK_ESCAPE) {
                     // KEYCODE_BACK = 4: nativeKeyState(keycode, unicode?, down, meta, repeat)
-                    if (started && !ev.key.repeat) P("nativeKeyState", "(IIZII)V", {JV::I(4), JV::I(0), JV::Z(down), JV::I(0), JV::I(0)});
+                    if (started && !ev.key.repeat) {
+                        if (u34) P("nativeKeyState", "(IIZ)V", {JV::I(4), JV::I(0), JV::Z(down)});
+                        else P("nativeKeyState", "(IIZII)V", {JV::I(4), JV::I(0), JV::Z(down), JV::I(0), JV::I(0)});
+                    }
                 } else if (k == SDLK_LEFT) tilt_x = down ? -4.0f : 0;
                 else if (k == SDLK_RIGHT) tilt_x = down ? 4.0f : 0;
                 else if (k == SDLK_UP) tilt_y = down ? -4.0f : 0;
@@ -472,12 +505,13 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
                 if (p.size() >= 4 && p[1] == "tap") { touch(0, (float)atof(p[2].c_str()), (float)atof(p[3].c_str()), 0, now); touch(0, (float)atof(p[2].c_str()), (float)atof(p[3].c_str()), 1, now + 50); }
                 else if (p.size() >= 2 && p[1] == "quit") plat::quitting = true;
                 else if (p.size() >= 3 && p[1] == "shot") {
-                    std::vector<uint8_t> px(plat::width * plat::height * 4);
+                    const int W = surf_w, H = surf_h;               // the whole window, side bars included
+                    std::vector<uint8_t> px(W * H * 4);
                     typedef void (*RP)(int, int, int, int, unsigned, unsigned, void *);
-                    ((RP)SDL_GL_GetProcAddress("glReadPixels"))(0, 0, plat::width, plat::height, 0x1908, 0x1401, px.data());
+                    ((RP)SDL_GL_GetProcAddress("glReadPixels"))(0, 0, W, H, 0x1908, 0x1401, px.data());
                     FILE *o = fopen(p[2].c_str(), "wb");
-                    if (o) { fprintf(o, "P6\n%d %d\n255\n", plat::width, plat::height);
-                        for (int y = plat::height - 1; y >= 0; y--) for (int x = 0; x < plat::width; x++) fwrite(&px[(y * plat::width + x) * 4], 1, 3, o);
+                    if (o) { fprintf(o, "P6\n%d %d\n255\n", W, H);
+                        for (int y = H - 1; y >= 0; y--) for (int x = 0; x < W; x++) fwrite(&px[(y * W + x) * 4], 1, 3, o);
                         fclose(o); logf("screenshot %s", p[2].c_str()); }
                 }
             }
@@ -492,11 +526,11 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
         if (!ok) { logf("nativeRender returned false: quitting"); break; }
         if (!started) {
             P("unityAndroidInit", "(Ljava/lang/String;Ljava/lang/String;)V", {JV::O(jni::jstr("assets/bin/")), JV::O(jni::jstr(plat::data_dir + "/lib"))});
-            P("unityAndroidPrepareGameLoop", "()V");
+            if (!u34) P("unityAndroidPrepareGameLoop", "()V");
             started = true;
             P("nativeResize", "(IIII)V", {JV::I(plat::width), JV::I(plat::height), JV::I(plat::width), JV::I(plat::height)});
             P("nativeResume", "()V");
-            P("nativeFocusChanged", "(Z)V", {JV::Z(true)});
+            if (!u34) P("nativeFocusChanged", "(Z)V", {JV::Z(true)});
             // UnityPlayer.resume(): the FMOD output device
             jni::JClass *fk = jni::find_class("org/fmod/FMODAudioDevice");
             jni::Ref dev = jni::new_obj(fk);
@@ -505,6 +539,7 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
             fk->methods["start()V"]->impl(dev.get(), none);
             logf("game loop started after %u ms", SDL_GetTicks() - t0);
         }
+        gl_draw_bars(surf_w, surf_h);
         SDL_GL_SwapWindow(win);
         frame++;
         {

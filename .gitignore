@@ -2,3 +2,5 @@ tools/
 work/
 __pycache__/
 *.pyc
+ilpatch/obj/
+ilpatch/bin/

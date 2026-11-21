@@ -315,6 +315,29 @@ IMP(memalign) { RET(gmemalign(A(0), A(1))); }
 IMP(posix_memalign) { uint32_t p = gmemalign(A(1) < 8 ? 8 : A(1), A(2)); W32(A(0), p); RET(p ? 0 : G_ENOMEM); }
 IMP(valloc) { RET(gmemalign(4096, A(0))); }
 IMP(malloc_usable_size) { RET(gmalloc_usable(A(0))); }
+// libstdc++ operator new/delete (older NDK builds import them instead of linking them in)
+IMP(_Znwj) { RET(gmalloc(A(0))); }
+IMP(_Znaj) { RET(gmalloc(A(0))); }
+IMP(_ZnwjRKSt9nothrow_t) { RET(gmalloc(A(0))); }
+IMP(_ZnajRKSt9nothrow_t) { RET(gmalloc(A(0))); }
+IMP(_ZdlPv) { gfree(A(0)); }
+IMP(_ZdaPv) { gfree(A(0)); }
+IMP(_ZdlPvRKSt9nothrow_t) { gfree(A(0)); }
+IMP(_ZdaPvRKSt9nothrow_t) { gfree(A(0)); }
+// TLSF pool allocator (Unity 3.4 libunity expects it from the platform); pools map onto the guest heap
+IMP(tlsf_create) { RET(A(0) ? A(0) : 1); }
+IMP(tlsf_create_with_pool) { RET(A(0) ? A(0) : 1); }
+IMP(tlsf_destroy) { }
+IMP(tlsf_malloc) { RET(gmalloc(A(1))); }
+IMP(tlsf_memalign) { RET(gmemalign(A(1) < 8 ? 8 : A(1), A(2))); }
+IMP(tlsf_realloc) { RET(grealloc(A(1), A(2))); }
+IMP(tlsf_free) { gfree(A(1)); }
+IMP(tlsf_block_size) { RET(A(0) ? gmalloc_usable(A(0)) : 0); }
+// old bionic atomics: return the previous value
+IMP(__atomic_inc) { RET((uint32_t)__atomic_fetch_add((uint32_t *)GPTR(A(0)), 1u, __ATOMIC_SEQ_CST)); }
+IMP(__atomic_dec) { RET((uint32_t)__atomic_fetch_sub((uint32_t *)GPTR(A(0)), 1u, __ATOMIC_SEQ_CST)); }
+IMP(__atomic_swap) { RET(__atomic_exchange_n((uint32_t *)GPTR(A(1)), A(0), __ATOMIC_SEQ_CST)); }
+IMP(__atomic_cmpxchg) { uint32_t e = A(0); RET(__atomic_compare_exchange_n((uint32_t *)GPTR(A(2)), &e, A(1), false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 0 : 1); }
 static thread_local uint32_t bs_fn;
 static int bs_cmp(const void *a, const void *b) { return (int)(int32_t)call(bs_fn, {G32(a), G32(b)}); }
 IMP(bsearch) {
@@ -489,6 +512,7 @@ extern "C" uint32_t rt_data_symbol(const char *name) {
     else if (!strcmp(name, "_toupper_tab_")) v = make_case(true);
     else if (!strcmp(name, "environ")) v = rt_environ();
     else if (!strcmp(name, "__page_size")) { v = gstatic(4); W32(v, 4096); }
+    else if (!strcmp(name, "__dso_handle")) v = gstatic(4);
     else return 0;
     cache[name] = v;
     return v;

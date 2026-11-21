@@ -148,6 +148,7 @@ v glUniform1iv i i p
 v glVertexAttrib4f i f f f f
 v glVertexAttrib4fv i p
 v glGetBooleanv i p
+b glIsEnabled i
 v glGetTexParameteriv i i p
 v glTexParameteriv i i p
 v glTexParameterfv i i p
@@ -159,12 +160,22 @@ v glDepthRangef f f
 v glSampleCoverage f i
 v glCopyTexImage2D i i i i i i i i
 v glCompressedTexSubImage2D i i i i i i i i p
+b glIsTexture i
+b glIsBuffer i
+b glIsFramebuffer i
+b glIsRenderbuffer i
+b glIsProgram i
+b glIsShader i
+v glGetRenderbufferParameteriv i i p
+v glGetRenderbufferParameterivOES i i p
+v glGetFramebufferAttachmentParameteriv i i i p
 """
 
 # functions with hand-written implementations in rt_gl.cpp
 MANUAL = {"glGetString", "glGetIntegerv", "glBindBuffer", "glMapBufferOES", "glUnmapBufferOES", "glGetVertexAttribPointerv",
           "glCompressedTexImage2D", "glDeleteBuffers", "glBlendFuncSeparate", "glBlendEquationSeparate", "glBlendEquation",
-          "glTexEnvi", "glTexEnvfv", "glActiveTexture", "glColor4f", "glEnableClientState", "glDisableClientState", "glClientActiveTexture"}
+          "glTexEnvi", "glTexEnvfv", "glActiveTexture", "glColor4f", "glEnableClientState", "glDisableClientState", "glClientActiveTexture",
+          "glViewport", "glScissor", "glBindFramebuffer", "glBindFramebufferOES"}
 
 CT = {"i": "GLint", "f": "GLfloat", "p": "const void *", "A": "const void *", "E": "const void *", "s": "const char *",
       "S": "const char *const *", "x": "GLint"}
