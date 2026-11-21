@@ -209,7 +209,18 @@ static void kuser_cmpxchg64(CPU *c) {         // r0 *old, r1 *new, r2 ptr
 static void kuser_barrier(CPU *) { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
 static void kuser_get_tls(CPU *c) { c->r[0] = c->tls; }
 
+static GuestFnPtr host_fn_slow(uint32_t addr);
+// direct-mapped lookup cache (per thread, no locks): the interpreter asks for every call target
 GuestFnPtr host_fn(uint32_t addr) {
+    struct E { uint32_t a; GuestFnPtr f; };
+    static thread_local E cache[4096];
+    E &e = cache[(addr >> 2) & 4095];
+    if (e.a == addr && addr) return e.f;
+    GuestFnPtr f = host_fn_slow(addr);
+    if (addr < DYN_TRAP || addr >= TRAP_END) { e.a = addr; e.f = f; }       // dynamic traps can still be added
+    return f;
+}
+static GuestFnPtr host_fn_slow(uint32_t addr) {
     if (__builtin_expect(addr >= 0xffff0f60u, 0)) {
         switch (addr & ~1u) {
         case 0xffff0fc0: return kuser_cmpxchg;
@@ -493,4 +504,11 @@ extern "C" void dyn_import(CPU *c, unsigned idx) {
         __atomic_store_n(&cache[idx], a, __ATOMIC_RELAXED);
     }
     call_addr(c, a);
+}
+
+// libunity -> libmono: explicit collections (Resources.UnloadUnusedAssets, GC.Collect) are logged at verbose 1
+IMP(mono_gc_collect) {
+    static uint32_t real = sym_addr("mono_gc_collect");
+    if (verbose) logf("mono_gc_collect(%d) from %s", (int)c->r[0], sym_name(c->r[14]));
+    call_addr(c, real);
 }

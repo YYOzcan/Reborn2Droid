@@ -487,6 +487,7 @@ extern "C" uint32_t rt_environ() {
 }
 void env_set(const std::string &k, const std::string &v) { std::lock_guard<std::mutex> g(env_mu); env_vars[k] = v; rebuild_env(); }
 IMP(getenv) {
+    if (verbose > 1) logf("getenv(%s)", GSTR(A(0)));
     std::lock_guard<std::mutex> g(env_mu);
     static std::map<std::string, uint32_t> cache;
     auto it = env_vars.find(GSTR(A(0)));

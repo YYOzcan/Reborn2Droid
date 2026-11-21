@@ -30,6 +30,7 @@ def rd16(v): return struct.unpack_from("<H", data, v2o(v))[0]
 def rd8(v): return data[v2o(v)]
 
 text = elf.get_section_by_name(".text"); TEXT_LO = text["sh_addr"]; TEXT_HI = TEXT_LO + text["sh_size"]
+NATIVE_NAMES = set(re.findall(r'"(__\w+)"', open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "native_helpers.txt")).read()))
 plt = elf.get_section_by_name(".plt"); PLT_LO = plt["sh_addr"]; PLT_HI = PLT_LO + plt["sh_size"]
 dynsym = elf.get_section_by_name(".dynsym")
 relplt = elf.get_section_by_name(".rel.plt")
@@ -40,11 +41,12 @@ for i, r in enumerate(relplt.iter_relocations()):
 funcs = {}                                              # vaddr -> (name, size, thumb)
 for s in dynsym.iter_symbols():
     if s["st_info"]["type"] == "STT_FUNC" and s["st_shndx"] != "SHN_UNDEF" and s["st_value"]:
-        v = s["st_value"]; funcs[v & ~1] = (s.name, s["st_size"], v & 1)
+        v = s["st_value"]
+        if (v & ~1) in funcs and funcs[v & ~1][0] in NATIVE_NAMES: continue      # keep the replaceable alias
+        funcs[v & ~1] = (s.name, s["st_size"], v & 1)
 
 # native replacements for libgcc helpers (faster and exact)
-NATIVE = {"__aeabi_idiv", "__aeabi_uidiv", "__aeabi_idivmod", "__aeabi_uidivmod", "__aeabi_ldivmod",
-          "__aeabi_uldivmod", "__divsi3", "__udivsi3", "__aeabi_idiv0", "__aeabi_ldiv0"}
+NATIVE = NATIVE_NAMES                                   # replaced by host code (runtime/softfloat_native.cpp, rt_core.cpp)
 
 # ----------------------------------------------------------------------------- decoding
 mdt = cs.Cs(cs.CS_ARCH_ARM, cs.CS_MODE_THUMB); mdt.detail = True
@@ -1199,7 +1201,9 @@ with open(os.path.join(OUT, f"{PFX}_decls.h"), "w") as fo:
     for n in sorted(NATIVE): fo.write(f"void nat_{n}(CPU *c);\n")
 with open(os.path.join(OUT, f"{PFX}_table.c"), "w") as fo:
     fo.write(f'#define BASE 0x{BASEV:x}u\n#include "guest.h"\n#include "{PFX}_decls.h"\n\nconst GuestFn {PFX}_fns[] = {{\n')
-    for a in order: fo.write(f"  {{0x{a:x}u, {PFX}_{a:08x}}},\n")
+    for a in order:
+        n = funcs.get(a, ("",))[0]
+        fo.write(f"  {{0x{a:x}u, nat_{n}}},\n" if n in NATIVE else f"  {{0x{a:x}u, {PFX}_{a:08x}}},\n")
     fo.write("};\nconst unsigned %s_fn_count = %d;\n" % (PFX, len(order)))
     fo.write("const GuestSym %s_syms[] = {\n" % PFX)
     for a in order:

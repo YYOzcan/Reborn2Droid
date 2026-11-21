@@ -25,7 +25,7 @@ The same build also runs as a native **Linux** program.
 | Supported engine | Unity 3.x / 4.x **Mono** builds for `armeabi-v7a` (`libunity.so` + `libmono.so`) |
 | Output | Android 7.0 – 17+ (arm64-v8a, x86_64); Linux x86_64 |
 | Verified games | **Air Attack HD** 1.5.1 (Art In Games, Unity 3.5.7, armeabi-v7a) — 60 fps on a Galaxy A52 |
-| | **Battle Robots!** 1.5.1 (COLOPL, Unity 3.5.6, armeabi-vfp / ARMv5TE) |
+| | **Battle Robots!** 1.5.1 (COLOPL, Unity 3.5.6, armeabi-vfp / ARMv5TE) — 60 fps, GC hitches removed |
 
 Reborn2Droid contains **no game code or data**. You provide your own APK; everything derived
 from it stays in `work/` on your machine and must not be redistributed.
@@ -77,7 +77,16 @@ original APK ──► libunity.so / libmono.so (32-bit ARM)
 
 * `roots_libunity.txt`, `roots_libmono.txt` – extra recompiler entry points (speed);
 * `prefs.txt` – PlayerPrefs values pinned while playing, e.g. `int Coin 999` keeps an
-  in-game currency at its maximum (offline single-player games only).
+  in-game currency at its maximum (offline single-player games only);
+* `prefs_<variant>.txt` – extra pins for an optional build variant:
+  `reborn2droid.py build Game.apk --variant cheat` adds `prefs_cheat.txt` and produces a separate
+  `…-cheat.apk` (same package, so it can replace the normal build and keep the save);
+* `patches.txt` – `lib vaddr old new` 32-bit word patches applied to the engine libraries before
+  recompilation (only when the old word matches), e.g. tuning the Boehm GC of old Mono builds.
+
+Built in for every game: libgcc's soft-float and 64-bit helpers (`__aeabi_fadd`, `__aeabi_dmul`,
+`__aeabi_f2iz`, …) exported by the engine libraries are replaced with host FPU code
+(`runtime/softfloat_native.cpp`), which matters a lot for `armeabi` / `armeabi-vfp` builds.
 
 Classes of the game's own Java package and of common plugin SDKs (ads, analytics, social,
 billing, web views) are provided as logged stubs automatically, so their calls never crash the
@@ -88,7 +97,7 @@ See [docs/how-it-works.md](docs/how-it-works.md) for the details and
 
 ## Debugging switches
 
-Linux (environment): `RB_VERBOSE=1|2|3`, `RB_FPS=1`, `RB_SCRIPT="300:tap:640:360;600:shot:a.ppm;900:quit"`,
+Linux (environment): `RB_VERBOSE=1|2|3`, `RB_FPS=1`, `RB_SCRIPT="300:tap:640:360;400:down:x:y;405:up:x:y;600:shot:a.ppm;900:quit"`,
 `RB_PROF=1` (interpreter profile), `RB_HPROF=1` (host profile), `RB_ENTRIES=file` (collect code the
 recompiler missed), `RB_DUMP=10` (periodic guest thread dumps), `RB_GLTRACE=frame`, `RB_GLES2EMU=1`
 (use the GLES 1.1 emulation on the desktop too), `DEBUG=1` at build time (track the guest pc).

@@ -3,6 +3,7 @@
 
     python3 reborn2droid.py build <game.apk> [targets...]     targets: android (default), linux, android-arm64, android-x86_64
     python3 reborn2droid.py info  <game.apk>                   show what Reborn2Droid sees in the APK
+    ... build <game.apk> --variant cheat                       also apply profiles/<package>/prefs_cheat.txt
 
 The game's 32-bit ARM engine libraries are statically recompiled to portable C, compiled for the
 target, and run on a runtime that provides the Android/Java side the original code expects.
@@ -92,7 +93,8 @@ def inspect(apk):
     return dict(package=pkg, version_code=vcode, version_name=vname, label=label, icon=icon, libdir=libdir,
                 activity=act.replace(".", "/"), orientation=orient, gles_mode=gles, splash_mode=splash)
 
-def work_dir(prof): return os.path.join(HERE, "work", prof["package"])
+def base_dir(prof): return os.path.join(HERE, "work", prof["package"])
+def work_dir(prof): return base_dir(prof) + (("@" + prof["variant"]) if prof.get("variant") else "")
 
 def write_profile(prof, wd):
     data = re.sub(r"[^A-Za-z0-9]+", "", prof["label"]) or prof["package"]
@@ -102,8 +104,10 @@ def write_profile(prof, wd):
          f'#define RB_DATA_NAME "{data}"\n#define RB_ACTIVITY "{prof["activity"]}"\n'
          f'#define RB_GLES_MODE {prof["gles_mode"]}\n#define RB_SPLASH_MODE {prof["splash_mode"]}\n#define RB_ORIENTATION {o}\n')
     pins = []
-    pf = os.path.join(HERE, "profiles", prof["package"], "prefs.txt")
-    if os.path.exists(pf):
+    files = [os.path.join(HERE, "profiles", prof["package"], "prefs.txt")]
+    if prof.get("variant"): files.append(os.path.join(HERE, "profiles", prof["package"], f"prefs_{prof['variant']}.txt"))
+    for pf in files:
+        if not os.path.exists(pf): continue
         for line in open(pf):
             parts = line.split(None, 2)
             if len(parts) == 3 and not parts[0].startswith("#") and parts[0] in ("int", "float", "string"):
@@ -115,12 +119,36 @@ def write_profile(prof, wd):
     if not os.path.exists(p) or open(p).read() != h: open(p, "w").write(h)
 
 # ================================================================= recompilation
+def apply_patches(data, libname, path):
+    """profile patches: 'lib vaddr old new' words, applied when the old word matches"""
+    if not os.path.exists(path): return data
+    import struct
+    buf = bytearray(data)
+    phoff, = struct.unpack_from("<I", buf, 28); phentsize, phnum = struct.unpack_from("<HH", buf, 42)
+    loads = []
+    for k in range(phnum):
+        p_type, p_offset, p_vaddr, _, p_filesz = struct.unpack_from("<5I", buf, phoff + k * phentsize)
+        if p_type == 1: loads.append((p_vaddr, p_offset, p_filesz))
+    for line in open(path):
+        parts = line.split("#")[0].split()
+        if len(parts) != 4 or parts[0] != libname: continue
+        va, old, new = (int(x, 16) for x in parts[1:])
+        off = next((va - v + o for v, o, fs in loads if v <= va < v + fs), None)
+        if off is None: print(f"   patch {libname}+{va:#x}: address not in the file"); continue
+        cur = struct.unpack_from("<I", buf, off)[0]
+        if cur != old: print(f"   patch {libname}+{va:#x}: skipped (found {cur:#x}, expected {old:#x})"); continue
+        struct.pack_into("<I", buf, off, new); print(f"   patched {libname}+{va:#x}: {old:#x} -> {new:#x}")
+    return bytes(buf)
+
+
 def recompile(apk, prof, wd):
     libs = os.path.join(wd, "libs"); os.makedirs(libs, exist_ok=True)
     z = zipfile.ZipFile(apk)
+    patches = os.path.join(HERE, "profiles", prof["package"], "patches.txt")
     for pfx, (name, base) in LIBS.items():
         dst = os.path.join(libs, name)
-        if not os.path.exists(dst): open(dst, "wb").write(z.read(prof["libdir"] + name))
+        if stale(dst, patches) or not os.path.exists(dst):
+            open(dst, "wb").write(apply_patches(z.read(prof["libdir"] + name), name, patches))
     rc = os.path.join(HERE, "recomp/recomp.py")
     gen = os.path.join(wd, "gen")
     for pfx, (name, base) in LIBS.items():
@@ -158,8 +186,10 @@ def toolchain(target):
         ["-shared", "-L" + sdl_lib, "-lSDL2", "-lz", "-llog", "-landroid", "-ldl", "-static-libstdc++", "-Wl,-z,max-page-size=16384",
          "-Wl,-Bsymbolic", "-Wl,--gc-sections", "-Wl,-O2"], "libmain.so", ["-I" + os.path.join(sdl_src, "include")]
 
-def compile_target(wd, target):
-    gen = os.path.join(wd, "gen")
+def compile_target(wd, target, bd=None):
+    bd = bd or wd                                   # base dir: generated code (shared by variants)
+    gen = os.path.join(bd, "gen")
+    gobj = os.path.join(bd, "build", target + ("-dbg" if os.environ.get("DEBUG") else ""), "obj"); os.makedirs(gobj, exist_ok=True)
     out = os.path.join(wd, "build", target + ("-dbg" if os.environ.get("DEBUG") else "")); obj = os.path.join(out, "obj")
     os.makedirs(obj, exist_ok=True)
     cc, cxx, extra, ldflags, exe, sdl_inc = toolchain(target)
@@ -170,7 +200,7 @@ def compile_target(wd, target):
     gflags = cc + opt + ["-w", "-fno-strict-aliasing", "-ffp-contract=off", "-fwrapv", "-g0"] + dbg + inc + extra
     for pfx in LIBS:
         for f in sorted(glob.glob(os.path.join(gen, pfx, "*.c"))):
-            jobs.append((gflags, f, os.path.join(obj, os.path.basename(f)[:-2] + ".o"),
+            jobs.append((gflags, f, os.path.join(gobj, os.path.basename(f)[:-2] + ".o"),
                          [os.path.join(gen, pfx, f"{pfx}_decls.h"), os.path.join(HERE, "runtime/guest.h")]))
     jobs.append((cc + ["-O2", "-w"] + inc + extra, os.path.join(gen, "imports_gen.c"), os.path.join(obj, "imports_gen.o"), []))
     jobs.append((cc + ["-O2", "-w", "-DONLY_MSPACES=1", "-DUSE_LOCKS=1", "-DHAVE_MMAP=0", "-DHAVE_MORECORE=0", "-DMSPACES=1"] + extra,
@@ -237,7 +267,7 @@ def package_apk(apk, prof, wd, abis):
         man = os.path.join(tmp, "AndroidManifest.xml")
         from xml.sax.saxutils import escape
         open(man, "w").write(MANIFEST.format(package=prof["package"] + ".reborn2droid", version_code=prof["version_code"],
-                                             version_name=escape(prof["version_name"]), label=escape(prof["label"]), orientation=orient))
+                                             version_name=escape(prof["version_name"]), label=escape(prof["label"] + (" (" + prof["variant"] + ")" if prof.get("variant") else "")), orientation=orient))
         run([os.path.join(bt, "aapt2"), "compile", "--dir", os.path.join(tmp, "res"), "-o", os.path.join(tmp, "res.zip")])
         base = os.path.join(tmp, "base.apk")
         run([os.path.join(bt, "aapt2"), "link", "-o", base, "-I", jar, "--manifest", man, os.path.join(tmp, "res.zip")])
@@ -257,11 +287,14 @@ def package_apk(apk, prof, wd, abis):
             for abi in abis:
                 zo.write(os.path.join(wd, "build", ABI_TARGET[abi], "libmain.so"), f"lib/{abi}/libmain.so", zipfile.ZIP_DEFLATED)
                 zo.write(os.path.join(TOOLS, "sdl-" + abi, "libSDL2.so"), f"lib/{abi}/libSDL2.so", zipfile.ZIP_DEFLATED)
+            engine = {prof["libdir"] + name for name, _ in LIBS.values()}
             for it in z.infolist():                      # the original game data, untouched
-                if it.filename.startswith("assets/"): zo.writestr(it, z.read(it.filename), compress_type=it.compress_type)
-            if not prof["libdir"].startswith("assets/"):  # engine libraries shipped in lib/: keep them as data
-                for name, _ in LIBS.values():
-                    zo.writestr("assets/reborn2droid/" + name, z.read(prof["libdir"] + name), zipfile.ZIP_DEFLATED)
+                if it.filename.startswith("assets/") and it.filename not in engine:
+                    zo.writestr(it, z.read(it.filename), compress_type=it.compress_type)
+            # engine libraries (as data, with the profile patches the recompiled code was built from)
+            ldir = prof["libdir"] if prof["libdir"].startswith("assets/") else "assets/reborn2droid/"
+            for name, _ in LIBS.values():
+                zo.write(os.path.join(base_dir(prof), "libs", name), ldir + name, zipfile.ZIP_DEFLATED)
         aligned = os.path.join(tmp, "aligned.apk")
         run([os.path.join(bt, "zipalign"), "-f", "-P", "16", "4", unsigned, aligned])
         ks = os.path.join(HERE, "work", "reborn2droid.keystore")
@@ -270,7 +303,7 @@ def package_apk(apk, prof, wd, abis):
                  "-keypass", "android", "-alias", "reborn2droid", "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000", "-dname", "CN=Reborn2Droid"])
         outd = os.path.join(wd, "out"); os.makedirs(outd, exist_ok=True)
         name = re.sub(r"[^A-Za-z0-9]+", "", prof["label"]) or "game"
-        out = os.path.join(outd, f"{name}-reborn2droid.apk")
+        out = os.path.join(outd, f"{name}-reborn2droid" + (f"-{prof['variant']}" if prof.get("variant") else "") + ".apk")
         run([os.path.join(bt, "apksigner"), "sign", "--ks", ks, "--ks-pass", "pass:android", "--key-pass", "pass:android",
              "--out", out, aligned], env=env)
         return out
@@ -285,20 +318,23 @@ def main():
     if sys.argv[1] == "info":
         for k, v in prof.items(): print(f"{k:14} {v}")
         return
-    targets = sys.argv[3:] or ["android"]
+    args = sys.argv[3:]
+    if "--variant" in args:                       # e.g. --variant cheat: also apply profiles/<pkg>/prefs_cheat.txt
+        k = args.index("--variant"); prof["variant"] = args[k + 1]; del args[k:k + 2]
+    targets = args or ["android"]
     wd = work_dir(prof); os.makedirs(wd, exist_ok=True)
     write_profile(prof, wd)
     print(f"== {prof['label']} ({prof['package']} {prof['version_name']}), engine libraries in {prof['libdir']}")
-    recompile(apk, prof, wd)
+    recompile(apk, prof, base_dir(prof))
     abis = []
     for t in targets:
         if t == "android": abis += ["arm64-v8a", "x86_64"]
         elif t in ABI_TARGET.values(): abis.append({v: k for k, v in ABI_TARGET.items()}[t])
         elif t == "linux":
-            b = compile_target(wd, "linux")
-            print(f"== linux: {b}\n   run: RB_LIBDIR={os.path.join(wd, 'libs')} {b} {apk}")
+            b = compile_target(wd, "linux", base_dir(prof))
+            print(f"== linux: {b}\n   run: RB_LIBDIR={os.path.join(base_dir(prof), 'libs')} {b} {apk}")
         else: die(f"unknown target {t}")
-    for abi in abis: compile_target(wd, ABI_TARGET[abi])
+    for abi in abis: compile_target(wd, ABI_TARGET[abi], base_dir(prof))
     if abis:
         out = package_apk(apk, prof, wd, abis)
         print(f"== {out} ({os.path.getsize(out) >> 20} MB)")

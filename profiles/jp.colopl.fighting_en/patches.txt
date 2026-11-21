@@ -1,0 +1,10 @@
+# Applied to the extracted engine libraries before recompilation: library vaddr old new (32-bit words, hex).
+# A patch is applied only if the old word matches, so a profile never corrupts another build of the game.
+#
+# Boehm GC (libmono) collected every ~4 MB of garbage (about every 1.3 s in battles), a 30-40 ms hitch on
+# phones each time. min_bytes_allocd() now returns 48 MB: a collection every ~15 s, same pause length.
+libmono.so 0x2ce168 0xe1a00003 0xe3a00403
+#
+# The game's scripts call System.GC.Collect() about once a second; each is a full stop-the-world
+# collection. mono_gc_collect() returns at once; allocation-driven collections above still run.
+libmono.so 0x145e58 0xe92d4800 0xe12fff1e

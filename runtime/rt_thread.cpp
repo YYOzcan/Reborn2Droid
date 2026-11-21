@@ -168,7 +168,7 @@ void wake(Thread *t) {
     }
 }
 void signal_thread(Thread *t, int sig) {
-    if (verbose > 1) logf("signal %d -> thread %u (masked %d)", sig, t->tid, (int)((t->sigmask & bit(sig)) != 0));
+    if (verbose > 1) logf("signal %d -> thread %u (masked %d) t=%.2fms", sig, t->tid, (int)((t->sigmask & bit(sig)) != 0), host::mono_ns() / 1e6);
     t->pending.fetch_or(bit(sig));
     if (!(t->sigmask & bit(sig))) t->c->sigpending = 1;
     wake(t);

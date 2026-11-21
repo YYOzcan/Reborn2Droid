@@ -347,7 +347,13 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
     pin_to_big_cores();
 #endif
     // ---- guest
+    // Boehm GC (inside libmono): start with a roomy heap so these small games rarely collect. The
+    // phones they were made for had ~512 MB; collections every second or two are what made them stutter.
     mem_init();
+    { extern void env_set(const std::string &, const std::string &);
+      env_set("GC_INITIAL_HEAP_SIZE", env_or("RB_GC_HEAP", "201326592"));   // 192 MB
+      env_set("GC_FREE_SPACE_DIVISOR", "2");
+      if (getenv("RB_GC_STATS")) env_set("GC_PRINT_STATS", "1"); }
     main_thread_create(16u << 20);
     std::string libdir = env_or("RB_LIBDIR", "");
 #ifdef __ANDROID__
@@ -461,6 +467,8 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
                 int f = atoi(cmd.c_str()); if (f > frame) break;
                 scr = semi == std::string::npos ? "" : scr.substr(semi + 1);
                 std::vector<std::string> p; std::stringstream ss(cmd); std::string tok; while (std::getline(ss, tok, ':')) p.push_back(tok);
+                if (p.size() >= 4 && p[1] == "down") touch(0, (float)atof(p[2].c_str()), (float)atof(p[3].c_str()), 0, now);
+                if (p.size() >= 4 && p[1] == "up") touch(0, (float)atof(p[2].c_str()), (float)atof(p[3].c_str()), 1, now);
                 if (p.size() >= 4 && p[1] == "tap") { touch(0, (float)atof(p[2].c_str()), (float)atof(p[3].c_str()), 0, now); touch(0, (float)atof(p[2].c_str()), (float)atof(p[3].c_str()), 1, now + 50); }
                 else if (p.size() >= 2 && p[1] == "quit") plat::quitting = true;
                 else if (p.size() >= 3 && p[1] == "shot") {
