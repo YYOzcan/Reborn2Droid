@@ -256,8 +256,15 @@ MF(sinf) MF(cosf) MF(asinf) MF(acosf)
 // ---------------------------------------------------------------- time
 IMP(time) { uint32_t t = (uint32_t)::time(nullptr); if (A(0)) W32(A(0), t); RET(t); }
 IMP(gettimeofday) { int64_t us = host::now_us(); if (A(0)) { W32(A(0), (uint32_t)(us / 1000000)); W32(A(0) + 4, (uint32_t)(us % 1000000)); } RET(0); }
+// dev: RB_TIMESCALE=4 runs the game clock 4x faster (testing level ends without playing them through)
+static int64_t guest_mono_ns() {
+    static double scale = getenv("RB_TIMESCALE") ? atof(getenv("RB_TIMESCALE")) : 1.0;
+    static int64_t t0 = host::mono_ns();
+    int64_t t = host::mono_ns();
+    return scale == 1.0 ? t : t0 + (int64_t)((t - t0) * scale);
+}
 IMP(clock_gettime) {
-    int64_t ns = A(0) == 0 ? host::now_us() * 1000 : host::mono_ns();     // 0 = CLOCK_REALTIME, others monotonic
+    int64_t ns = A(0) == 0 ? host::now_us() * 1000 : guest_mono_ns();     // 0 = CLOCK_REALTIME, others monotonic
     W32(A(1), (uint32_t)(ns / 1000000000)); W32(A(1) + 4, (uint32_t)(ns % 1000000000)); RET(0);
 }
 static void tm_to_guest(const struct tm &t, uint32_t g, long gmtoff) {

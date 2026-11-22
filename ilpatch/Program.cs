@@ -78,6 +78,16 @@ static class P {
             var il = Reset(md);
             switch (kind) {
             case "stub": Default(il, md); break;
+            case "sendmessage": {          // this.SendMessage("<extra>") (Component method), then return
+                var comp = md.DeclaringType.Resolve(); TypeDefinition t = comp;
+                MethodReference sm = null;
+                while (t != null && sm == null) {
+                    sm = t.Methods.FirstOrDefault(x => x.Name == "SendMessage" && x.Parameters.Count == 1 && x.Parameters[0].ParameterType.MetadataType == MetadataType.String);
+                    t = t.BaseType?.Resolve();
+                }
+                if (sm == null) throw new Exception("SendMessage(string) not found");
+                il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldstr, extra); il.Emit(OpCodes.Call, m.ImportReference(sm));
+                Default(il, md); break; }
             case "return-int": il.Emit(OpCodes.Ldc_I4, int.Parse(extra)); il.Emit(OpCodes.Ret); break;
             case "return-new": {
                 var ctor = md.ReturnType.Resolve().Methods.First(x => x.IsConstructor && !x.IsStatic && x.Parameters.Count == 0);

@@ -1,0 +1,2 @@
+# --variant endtest (development only): the first hit on the player wins the mission (tests the level end)
+assets/bin/Data/Managed/Assembly-UnityScript.dll  sendmessage:player_controller::OnDamage/1@OnLevelWin

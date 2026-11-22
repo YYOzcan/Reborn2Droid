@@ -218,6 +218,8 @@ static void def_android() {
     def_method(loc, "getDisplayName", "()Ljava/lang/String;", [](Obj *s, Args &) { return str(s->str); });
     JClass *map = def_class("java/util/HashMap");
     def_method(map, "<init>", "()V", [](Obj *, Args &) { return nul(); });
+    def_method(map, "<init>", "(I)V", [](Obj *, Args &) { return nul(); });
+    def_method(map, "get", "(Ljava/lang/Object;)Ljava/lang/Object;", [](Obj *s, Args &a) { return get_field(s, a[0].s()); });
     def_method(map, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", [](Obj *s, Args &a) { set_field(s, a[0].s(), a[1]); return nul(); });
     def_class("java/util/Map");
     JClass *bundle = def_class("android/os/Bundle");
