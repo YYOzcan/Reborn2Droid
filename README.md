@@ -87,6 +87,8 @@ original APK ──► libunity.so / libmono.so (32-bit ARM)
 * `ilpatch.txt` – `assembly recipe…` method-body replacements in the game's managed DLLs
   (`ilpatch/`, Mono.Cecil; needs the .NET SDK at build time), e.g. turning slow or APK-bound C# code
   into a plain read;
+* `ilpatch_<variant>.txt` – extra IL recipes for `--variant <variant>` (e.g. Sleepy Jack's
+  `ilpatch_cheat.txt` opens every world and level);
 * `prepare.py` – `transform(zipfile) -> {entry: bytes}`: rewrites game assets (e.g. pre-decrypting
   bundles whose key depends on the original APK). With `ilpatch.txt`/`prepare.py` the build writes a
   patched copy of the game data, `work/<package>/game-data.apk`, used for Linux runs and the APK;

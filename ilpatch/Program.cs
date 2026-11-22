@@ -5,12 +5,14 @@
 //   stub:Type::Method/n              body returns the default value (null / 0 / false / nothing)
 //   return-new:Type::Method/n        body returns `new ReturnType()`
 //   return-int:Type::Method/n=V      body returns the int constant V (also bool: 0/1)
+//   retfield:Type::Method/n@Field=V  body kept; the returned object's Field is set to V (bool/int/float)
 //   readexact:Type::Method/n@s,c     body returns a byte[] of length arg c read fully from Stream arg s
 //                                    (used to replace slow managed decryption by pre-decrypted data)
 using System;
 using System.Linq;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
+using Mono.Cecil.Rocks;
 
 static class P {
     static MethodDefinition Find(ModuleDefinition m, string spec) {
@@ -55,6 +57,24 @@ static class P {
             string extra = null;
             int at = rest.IndexOfAny(new[] { '@', '=' }); if (at > 0) { extra = rest[(at + 1)..]; rest = rest[..at]; }
             var md = Find(m, rest);
+            if (kind == "retfield") {
+                // keep the body; on every return set a field of the returned object (when not null)
+                var kv = extra.Split('='); 
+                var fld = md.ReturnType.Resolve().Fields.First(f => f.Name == kv[0]);
+                var fr = m.ImportReference(fld);
+                var p0 = md.Body.GetILProcessor();
+                var rets = md.Body.Instructions.Where(x => x.OpCode == OpCodes.Ret).ToList();
+                var tail = p0.Create(OpCodes.Dup); var end = p0.Create(OpCodes.Ret);
+                foreach (var r0 in rets) { r0.OpCode = OpCodes.Br; r0.Operand = tail; }
+                p0.Append(tail); p0.Emit(OpCodes.Brfalse, end); p0.Emit(OpCodes.Dup);
+                if (fld.FieldType.MetadataType == MetadataType.Boolean || fld.FieldType.MetadataType == MetadataType.Int32) p0.Emit(OpCodes.Ldc_I4, int.Parse(kv[1]));
+                else if (fld.FieldType.MetadataType == MetadataType.Single) p0.Emit(OpCodes.Ldc_R4, float.Parse(kv[1], System.Globalization.CultureInfo.InvariantCulture));
+                else throw new Exception("retfield: unsupported field type " + fld.FieldType);
+                p0.Emit(OpCodes.Stfld, fr); p0.Append(end);
+                md.Body.OptimizeMacros();
+                Console.WriteLine($"   ilpatch {kind}: {md.FullName} -> {fld.Name} = {kv[1]}");
+                continue;
+            }
             var il = Reset(md);
             switch (kind) {
             case "stub": Default(il, md); break;

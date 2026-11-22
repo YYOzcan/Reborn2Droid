@@ -184,18 +184,20 @@ def game_data(apk, prof):
     managed assemblies; prepare.py: asset transforms) a patched copy is written to work/<pkg>/game-data.apk."""
     pdir = os.path.join(HERE, "profiles", prof["package"])
     ilp, prep = os.path.join(pdir, "ilpatch.txt"), os.path.join(pdir, "prepare.py")
-    if not os.path.exists(ilp) and not os.path.exists(prep): return apk
-    out = os.path.join(base_dir(prof), "game-data.apk")
-    if not stale(out, apk, ilp, prep, os.path.join(HERE, "ilpatch/Program.cs")): return out
+    ilv = os.path.join(pdir, f"ilpatch_{prof['variant']}.txt") if prof.get("variant") else ""   # variant extras
+    ilfiles = [f for f in (ilp, ilv) if f and os.path.exists(f)]
+    if not ilfiles and not os.path.exists(prep): return apk
+    out = os.path.join(work_dir(prof), "game-data.apk")
+    if not stale(out, apk, prep, os.path.join(HERE, "ilpatch/Program.cs"), *ilfiles): return out
     print("== patching game data", flush=True)
     z = zipfile.ZipFile(apk); repl = {}
     if os.path.exists(prep):
         import importlib.util
         spec = importlib.util.spec_from_file_location("prepare", prep); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
         repl.update(mod.transform(z))
-    if os.path.exists(ilp):
+    if ilfiles:
         recipes = {}
-        for line in open(ilp):
+        for line in (l for f in ilfiles for l in open(f)):
             parts = line.split("#")[0].split()
             if len(parts) >= 2: recipes.setdefault(parts[0], []).extend(parts[1:])
         tool = os.path.join(HERE, "work", "ilpatch-bin", "ilpatch.dll")
