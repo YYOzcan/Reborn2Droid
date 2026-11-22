@@ -60,6 +60,7 @@ def decode_at(addr, thumb):
     o = v2o(addr); r = None
     for i in (mdt if thumb else mda).disasm(data[o:o + 4], addr, 1):
         r = i; break
+    if r is not None and thumb: THUMB_INSNS.add(id(r))
     _dcache[k] = r
     return r
 
@@ -110,8 +111,10 @@ def note_it(i):
         if n is None: break
         a += n.size
 
+THUMB_INSNS = set()                                     # ids of instructions decoded in Thumb mode
 def eff_cc(i):
-    return IT_COND.get(i.address, i.cc)
+    # IT blocks only govern Thumb code: a Thumb decode of ARM bytes (or data) must not change ARM conditions
+    return IT_COND.get(i.address, i.cc) if id(i) in THUMB_INSNS else i.cc
 
 class Func:
     def __init__(self, entry, thumb, end):
@@ -715,7 +718,7 @@ class Gen:
             tr = self.R(i.reg_name(ops[0].reg))
             o.append(f"  switch (({tr} - BASE) & ~1u) {{")
             for t in sorted(set(targets)): o.append(f"    case 0x{t:x}u: goto L_{t:x};")
-            o.append(f"    default: call_addr(c, {tr}); return;\n  }}")
+            o.append(f"    default: jump_addr(c, {tr}, elr); return;\n  }}")
             return
         vt = veneer_target(self.fn.insns, i) if not self.thumb else None
         if vt is not None:
@@ -1005,7 +1008,7 @@ class Gen:
         cases = sorted(a for a in self.fn.insns if a > i.address and a < i.address + 8 + 4 * 256)
         o.append("  switch (t) {")
         for a in cases: o.append(f"    case 0x{a:x}u: goto L_{a:x};")
-        o.append(f"    default: call_addr(c, t + BASE); return;\n  }}")
+        o.append(f"    default: jump_addr(c, t + BASE, elr); return;\n  }}")
         for a in cases: self.fn.labels.add(a)
 
     # ------------------------------------------------------------------ VFP

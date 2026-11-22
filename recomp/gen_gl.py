@@ -128,6 +128,9 @@ v glUniform1i i i
 v glUniform2fv i i p
 v glUniform3fv i i p
 v glUniform4fv i i p
+v glUniform2iv i i p
+v glUniform3iv i i p
+v glUniform4iv i i p
 v glUniformMatrix3fv i i i p
 v glUniformMatrix4fv i i i p
 v glUseProgram i

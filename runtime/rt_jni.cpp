@@ -25,7 +25,11 @@ JClass *def_class(const std::string &name, const std::string &super, bool lenien
     std::lock_guard<std::recursive_mutex> g(mu);
     JClass *&k = classes()[name];
     if (!k) { k = new JClass(); k->name = name; }
-    if (name != "java/lang/Object" && !super.empty()) k->super = def_class(super, name == "java/lang/Object" ? "" : "java/lang/Object");
+    if (name != "java/lang/Object" && !super.empty()) {
+        // an existing superclass keeps its own parent; a new one starts under java.lang.Object
+        auto it = classes().find(super);
+        k->super = it != classes().end() && it->second ? it->second : def_class(super, "java/lang/Object");
+    }
     k->lenient = k->lenient || lenient;
     if (!k->class_obj) {
         k->class_obj = std::make_shared<Obj>();
@@ -337,6 +341,9 @@ static bool lenient_namespace(const std::string &n) {
                                     "com/inmobi/", "com/revmob/", "com/heyzap/", "com/vungle/", "com/applovin/", "com/bda/", "com/openfeint/",
                                     "com/scoreloop/", "com/swarmconnect/", "com/papaya/", "com/unity3d/Plugin/", "com/android/vending/"};
     if (n.rfind(app, 0) == 0) return true;
+    if (n.rfind("android/", 0) == 0) return true;          // framework classes the runtime does not model: logged stubs
+    // third-party plugin SDKs bundled with the game (any vendor namespace): logged stubs; the JDK stays strict
+    if (n.rfind("java/", 0) != 0 && n.rfind("javax/", 0) != 0 && n.rfind("dalvik/", 0) != 0 && n[0] != '[') return true;
     // the developer's own shared Java code next to the app package (com/vendor/framework/...)
     static std::string vendor = [] { std::string a = app; size_t k = a.find('/'); k = k == std::string::npos ? k : a.find('/', k + 1);
                                      std::string v = k == std::string::npos ? "" : a.substr(0, k + 1);

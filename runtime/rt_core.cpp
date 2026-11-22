@@ -76,6 +76,9 @@ static void on_crash(const char *what, void *addr) {
     logf("CRASH %s at host addr %p (guest 0x%llx)", what, addr, ga);
     if (c) {
         logf("guest pc=0x%08x (%s)", c->r[15], sym_name(c->r[15]));
+#ifdef RB_TRACE
+    { extern void rb_trace_dump_c(); rb_trace_dump_c(); }
+#endif
         logf("guest lr=0x%08x (%s)", c->r[14], sym_name(c->r[14]));
         char line[256]; int n = 0;
         for (int k = 0; k < 16; k++) { n += snprintf(line + n, sizeof line - n, " r%-2d=%08x", k, c->r[k]); if (k % 4 == 3) { logf("%s", line); n = 0; } }
@@ -272,6 +275,23 @@ extern "C" void call_addr(CPU *c, uint32_t addr) {
     interp::call(c, addr);
 }
 
+// an indirect jump (not a call): a tail call to a function, or a jump to code of the current function the
+// recompiler did not see (an unrecognised switch table). The latter continues in the interpreter until the
+// function returns to its caller (elr), exactly like an unimplemented instruction.
+extern "C" void jump_addr(CPU *c, uint32_t addr, uint32_t elr) {
+    // a jump-table slot is an unconditional "b label": go straight to the label
+    for (int k = 0; k < 2 && is_static_code(addr) && !(addr & 1); k++) {
+        uint32_t insn = R32(addr);
+        if ((insn & 0xff000000u) != 0xea000000u) break;
+        addr = addr + 8 + ((uint32_t)((int32_t)(insn << 8) >> 6));
+    }
+    GuestFnPtr f = host_fn(addr);
+    if (f) { f(c); return; }
+    if (addr < NULL_GUARD)
+        fatal("jump to null guest address 0x%08x, lr=0x%08x (%s)", addr, c->r[14], sym_name(c->r[14]));
+    if (is_static_code(addr)) { note_static_entry(addr, "jump"); interp::resume(c, addr, elr); return; }
+    interp::call(c, addr);
+}
 extern "C" void unimpl(CPU *c, uint32_t elr, uint32_t addr, const char *what) {
     note_static_entry(addr, what);
     interp::resume(c, addr, elr);
@@ -512,3 +532,35 @@ IMP(mono_gc_collect) {
     if (verbose) logf("mono_gc_collect(%d) from %s", (int)c->r[0], sym_name(c->r[14]));
     call_addr(c, real);
 }
+
+#ifdef RB_TRACE
+namespace rt { void rb_trace_dump_c(); }
+// DEBUG=1 TRACE=1 builds: the last guest pcs of the crashing thread
+static thread_local uint32_t *tr_ring_p; static thread_local unsigned tr_n;
+#define tr_ring (tr_ring_p ? tr_ring_p : (tr_ring_p = (uint32_t *)calloc(1u << 22, 4)))
+extern "C" void rb_trace(CPU *c) { tr_ring[tr_n++ & ((1u << 22) - 1)] = c->r[15]; }
+void rt::rb_trace_dump_c() {
+    logf("last guest instructions (oldest first):");
+    uint32_t prev = 0; unsigned shown = 0;
+    // the native->interpreter transitions over the whole ring, then the last 64 jumps
+    for (unsigned k = tr_n > (1u << 22) ? tr_n - (1u << 22) : 0; k + 1 < tr_n; k++) {
+        uint32_t a = tr_ring[k & ((1u << 22) - 1)], b = tr_ring[(k + 1) & ((1u << 22) - 1)];
+        if (!(a & 1) && (b & 1) && (b & ~1u) >= 0x10000000 && (b & ~1u) < 0x12000000 && shown++ < 1) {
+            logf("  first native->interp transition, preceded by:");
+            uint32_t pv = 0;
+            static uint32_t wlo = getenv("RB_TWATCH") ? strtoul(getenv("RB_TWATCH"), 0, 16) : 0;
+            for (unsigned j = k > 400000 ? k - 400000 : 0; j <= k + 1; j++) {
+                uint32_t q = tr_ring[j & ((1u << 22) - 1)];
+                bool in = wlo ? ((q & ~1u) >= wlo && (q & ~1u) < wlo + 0x8000) : (j + 400 > k);
+                if ((q & ~1u) != pv + 4 && (in || (q & 1))) logf("    [%u] %08x%s %s", k - j, q & ~1u, (q & 1) ? " (interp)" : "", sym_name(q & ~1u));
+                pv = q & ~1u;
+            }
+        }
+    }
+    for (unsigned k = tr_n > 256 ? tr_n - 256 : 0; k < tr_n; k++) {
+        uint32_t pc = tr_ring[k & ((1u << 22) - 1)];
+        if ((pc & ~1u) != prev + 4) logf("  %08x%s %s", pc & ~1u, (pc & 1) ? " (interp)" : "", sym_name(pc & ~1u));
+        prev = pc & ~1u;
+    }
+}
+#endif

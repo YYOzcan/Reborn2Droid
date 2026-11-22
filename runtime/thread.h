@@ -28,6 +28,7 @@ struct Thread {
 };
 
 Thread *self_thread();                        // creates the record for foreign host threads
+void start_thread_dumper();
 Thread *thread_by_guest(uint32_t pthread_self);
 Thread *main_thread_create(size_t guest_stack);   // call once on the host main/game thread
 bool deliver_pending(Thread *t);              // run handlers for pending unblocked signals (true if any ran)

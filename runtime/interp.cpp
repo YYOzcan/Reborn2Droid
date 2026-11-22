@@ -5,6 +5,7 @@
 // entered (with the same sp).  Calls to recompiled functions and imports are host calls.  Mono's
 // exception unwinding restores a register context and jumps into an outer managed frame; when the
 // interpreter sees a return into an *outer* activation it unwinds the host stack to it (longjmp).
+namespace rt { void rb_trace_dump_c(); }
 #include "rt.h"
 #include <cstring>
 #include <cmath>
@@ -136,6 +137,7 @@ void call(CPU *c, uint32_t pc) {
 }
 
 void resume(CPU *c, uint32_t pc, uint32_t stop) {
+    if (verbose > 1) logf("interp resume at %08x stop %08x sp %08x lr %08x", pc, stop, c->r[13], c->r[14]);
     Activation a;
     a.stop_pc = stop & ~1u; a.stop_sp = 0; a.prev = t_act; a.c = c;
     t_act = &a;
@@ -159,6 +161,7 @@ static void vfp_data(CPU *c, uint32_t insn, uint32_t pc);
 static void vfp_ldst(CPU *c, uint32_t insn, uint32_t pc);
 static void vfp_xfer(CPU *c, uint32_t insn, uint32_t pc);
 
+static thread_local uint32_t t_prev_pc;
 static void run(CPU *c, uint32_t pc, Activation *act) {
     for (;;) {
         uint32_t insn;
@@ -166,7 +169,22 @@ static void run(CPU *c, uint32_t pc, Activation *act) {
         for (;;) {
             if (__builtin_expect(c->sigpending, 0)) { c->r[15] = pc; guest_poll(c); pc = c->r[15]; }
             if (pc & 1) bad(c, pc, 0, "thumb code is not supported by the interpreter");
+            if (__builtin_expect(pc < 0x10000u, 0)) {           // jump/call to a null pointer: guest SIGSEGV at pc
+                c->r[15] = pc;
+                if (verbose) logf("interpreter: jump to 0x%x from %08x (lr %08x, r0 %08x)", pc, t_prev_pc, c->r[14], c->r[0]);
+#ifdef RB_TRACE
+                ::rt::rb_trace_dump_c();
+#endif
+                throw Fault{pc};
+            }
             insn = R32(pc);
+            { static uint32_t lo = getenv("RB_IWATCH") ? strtoul(getenv("RB_IWATCH"), 0, 16) : 0;
+              static uint32_t ln = getenv("RB_IWATCHLEN") ? strtoul(getenv("RB_IWATCHLEN"), 0, 16) : 0x40;
+              if (lo && pc >= lo && pc < lo + ln && pc != t_prev_pc + 4) logf("interp at %08x from %08x lr %08x sp %08x", pc, t_prev_pc, c->r[14], c->r[13]); }
+            t_prev_pc = pc;
+#ifdef RB_TRACE
+            c->r[15] = pc | 0x1; rb_trace(c); c->r[15] = pc;      // odd = interpreted (trace dump)
+#endif
             if ((++t_steps & 1023) == 0 && prof_on) prof_sample(pc);
             uint32_t cond = insn >> 28;
             uint32_t npc = pc + 4;

@@ -24,7 +24,7 @@
 
 using namespace rt;
 
-namespace java { void fmod_start34(); jni::Ref player(); jni::JV player_native(const char *n, const char *s, const jni::Args &a); bool player_has(const char *n, const char *s); jni::Ref prefs_object(); }
+namespace java { jni::Ref activity(); jni::Ref motion_event(int, float, float, int, int64_t); jni::Ref surface(); void fmod_start34(); jni::Ref player(); jni::JV player_native(const char *n, const char *s, const jni::Args &a); bool player_has(const char *n, const char *s); jni::Ref prefs_object(); }
 extern bool gl_desktop_es3;
 
 // =================================================================== platform services
@@ -159,7 +159,7 @@ static void *gl_get_es2(const char *name) {
 static void *gl_get_emu(const char *name) { return gles1::lookup(name, gl_get_es2); }
 static void *gl_get(const char *name) {
     if (g_emu) return gl_get_emu(name);
-    if (RB_GLES_MODE == 2) return gl_get_es2(name);   // GLES 2 game on a GLES 2 context
+    if (RB_GLES_MODE != 1) return gl_get_es2(name);   // GLES 2 game on a GLES 2 context
 #ifdef __ANDROID__
     // the emulator's GLES 1 translator has no glDeleteFramebuffersOES behind its dispatch stub
     static bool emu = [] { typedef const char *(*GS)(unsigned); void *l = dlopen("libGLESv1_CM.so", RTLD_NOW);
@@ -208,7 +208,75 @@ static void apply_aspect() {
 }
 using jni::JV;
 
+// Unity 4.x Screen.SetResolution: the engine renders a w x h backbuffer at the bottom-left of the window;
+// the host scales it up to the window before presenting
+extern int gl_xoff;
+static int bb_w, bb_h;
+void host_set_backbuffer(int w, int h) { bb_w = w; bb_h = h; }
+static void upscale_backbuffer(int W, int H) {
+    if (bb_w <= 0 || bb_h <= 0 || (bb_w >= W && bb_h >= H)) return;
+    typedef unsigned GLu; typedef int GLi;
+    #define GLF(ret, name, ...) static auto name = (ret (*)(__VA_ARGS__))SDL_GL_GetProcAddress(#name)
+    GLF(void, glGetIntegerv, GLu, GLi *); GLF(void, glGetBooleanv, GLu, unsigned char *);
+    GLF(void, glGenTextures, GLi, GLu *); GLF(void, glBindTexture, GLu, GLu); GLF(void, glActiveTexture, GLu);
+    GLF(void, glTexImage2D, GLu, GLi, GLi, GLi, GLi, GLi, GLu, GLu, const void *); GLF(void, glTexParameteri, GLu, GLu, GLi);
+    GLF(void, glCopyTexSubImage2D, GLu, GLi, GLi, GLi, GLi, GLi, GLi, GLi);
+    GLF(GLu, glCreateShader, GLu); GLF(void, glShaderSource, GLu, GLi, const char *const *, const GLi *); GLF(void, glCompileShader, GLu);
+    GLF(GLu, glCreateProgram); GLF(void, glAttachShader, GLu, GLu); GLF(void, glBindAttribLocation, GLu, GLu, const char *);
+    GLF(void, glLinkProgram, GLu); GLF(void, glUseProgram, GLu); GLF(GLi, glGetUniformLocation, GLu, const char *); GLF(void, glUniform1i, GLi, GLi);
+    GLF(void, glBindBuffer, GLu, GLu); GLF(void, glBindFramebuffer, GLu, GLu); GLF(void, glViewport, GLi, GLi, GLi, GLi);
+    GLF(void, glEnable, GLu); GLF(void, glDisable, GLu); GLF(void, glColorMask, unsigned char, unsigned char, unsigned char, unsigned char);
+    GLF(void, glGetVertexAttribiv, GLu, GLu, GLi *); GLF(void, glGetVertexAttribPointerv, GLu, GLu, void **);
+    GLF(void, glVertexAttribPointer, GLu, GLi, GLu, unsigned char, GLi, const void *);
+    GLF(void, glEnableVertexAttribArray, GLu); GLF(void, glDisableVertexAttribArray, GLu); GLF(void, glDrawArrays, GLu, GLi, GLi);
+    #undef GLF
+    static GLu tex, prog; static int tw, th;
+    if (!prog) {
+        const char *vs = "attribute vec2 p; varying vec2 v; uniform vec2 s; void main(){ v = (p * 0.5 + 0.5) * s; gl_Position = vec4(p, 0.0, 1.0); }";
+        const char *fs = "precision mediump float; varying vec2 v; uniform sampler2D t; void main(){ gl_FragColor = texture2D(t, v); }";
+        GLu a = glCreateShader(0x8B31), b = glCreateShader(0x8B30);
+        glShaderSource(a, 1, &vs, nullptr); glCompileShader(a); glShaderSource(b, 1, &fs, nullptr); glCompileShader(b);
+        prog = glCreateProgram(); glAttachShader(prog, a); glAttachShader(prog, b); glBindAttribLocation(prog, 0, "p"); glLinkProgram(prog);
+        glGenTextures(1, &tex);
+    }
+    // save what the engine may have cached
+    GLi o_prog, o_unit, o_tex, o_ab, o_fb, o_vp[4]; unsigned char o_mask[4];
+    glGetIntegerv(0x8B8D, &o_prog); glGetIntegerv(0x84E0, &o_unit); glGetIntegerv(0x8894, &o_ab); glGetIntegerv(0x8CA6, &o_fb);
+    glGetIntegerv(0x0BA2, o_vp); glGetBooleanv(0x0C23, o_mask);
+    unsigned caps[] = {0x0C11, 0x0BE2, 0x0B71, 0x0B44, 0x0B90, 0x8037};
+    unsigned char o_caps[6]; for (int k = 0; k < 6; k++) glGetBooleanv(caps[k], &o_caps[k]);
+    GLi a_en, a_size, a_type, a_norm, a_stride, a_buf; void *a_ptr = nullptr;
+    glGetVertexAttribiv(0, 0x8622, &a_en); glGetVertexAttribiv(0, 0x8623, &a_size); glGetVertexAttribiv(0, 0x8625, &a_type);
+    glGetVertexAttribiv(0, 0x886A, &a_norm); glGetVertexAttribiv(0, 0x8624, &a_stride); glGetVertexAttribiv(0, 0x889F, &a_buf);
+    glGetVertexAttribPointerv(0, 0x8645, &a_ptr);
+    glActiveTexture(0x84C0); glGetIntegerv(0x8069, &o_tex);
+    // copy the backbuffer region to a texture and draw it over the whole window
+    glBindFramebuffer(0x8D40, 0); glBindTexture(0x0DE1, tex);
+    if (tw != bb_w || th != bb_h) {
+        glTexImage2D(0x0DE1, 0, 0x1907, bb_w, bb_h, 0, 0x1907, 0x1401, nullptr); tw = bb_w; th = bb_h;
+        glTexParameteri(0x0DE1, 0x2801, 0x2601); glTexParameteri(0x0DE1, 0x2800, 0x2601);
+        glTexParameteri(0x0DE1, 0x2802, 0x812F); glTexParameteri(0x0DE1, 0x2803, 0x812F);
+    }
+    glCopyTexSubImage2D(0x0DE1, 0, 0, 0, gl_xoff, 0, bb_w, bb_h);
+    for (int k = 0; k < 6; k++) glDisable(caps[k]);
+    glColorMask(1, 1, 1, 1); glViewport(gl_xoff, 0, W, H);
+    glUseProgram(prog); glUniform1i(glGetUniformLocation(prog, "t"), 0);
+    static auto u2 = (void (*)(GLi, float, float))SDL_GL_GetProcAddress("glUniform2f");
+    u2(glGetUniformLocation(prog, "s"), 1.0f, 1.0f);
+    static const float quad[] = {-1, -1, 1, -1, -1, 1, 1, 1};
+    glBindBuffer(0x8892, 0); glEnableVertexAttribArray(0); glVertexAttribPointer(0, 2, 0x1406, 0, 0, quad);
+    glDrawArrays(5, 0, 4);
+    // restore
+    glBindBuffer(0x8892, a_buf); glVertexAttribPointer(0, a_size, a_type, (unsigned char)a_norm, a_stride, a_ptr);
+    if (!a_en) glDisableVertexAttribArray(0);
+    glBindBuffer(0x8892, o_ab); glBindTexture(0x0DE1, o_tex); glActiveTexture(o_unit); glUseProgram(o_prog);
+    glBindFramebuffer(0x8D40, o_fb); glViewport(o_vp[0], o_vp[1], o_vp[2], o_vp[3]);
+    glColorMask(o_mask[0], o_mask[1], o_mask[2], o_mask[3]);
+    for (int k = 0; k < 6; k++) if (o_caps[k]) glEnable(caps[k]);
+}
+static bool g_u4 = false;          // Unity 4.x player: MotionEvent objects, own EGL, nativeRender
 static void touch(int id, float x, float y, int action, int64_t t_ms) {
+    if (g_u4) { P("nativeInjectEvent", "(Landroid/view/InputEvent;)Z", {JV::O(java::motion_event(id, x, y, action, t_ms))}); return; }
     // nativeTouch(pointerId, x, y, action, eventTime, source=TOUCHSCREEN)
     P("nativeTouch", "(IFFIJI)V", {JV::I(id), JV::F(x), JV::F(y), JV::I(action), JV::J(t_ms), JV::I(4098)});
 }
@@ -299,14 +367,14 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS | SDL_INIT_SENSOR) != 0) fatal("SDL_Init: %s", SDL_GetError());
 #ifdef __ANDROID__
-    g_es = true; g_emu = RB_GLES_MODE != 2;           // GLES 2 games talk to the driver directly
+    g_es = true; g_emu = RB_GLES_MODE == 1;           // GLES 2 / auto (Unity 4) games talk to the driver directly
     { char v[92] = {0}; if (__system_property_get("debug.rb.nativegles1", v) > 0 && atoi(v)) g_emu = false; }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, g_emu || RB_GLES_MODE == 2 ? 2 : 1);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, g_emu || RB_GLES_MODE == 2 ? 0 : 1);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, g_emu || RB_GLES_MODE != 1 ? 2 : 1);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, g_emu || RB_GLES_MODE != 1 ? 0 : 1);
     Uint32 wflags = SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_ALLOW_HIGHDPI;
 #else
-    if (RB_GLES_MODE == 2 && !getenv("RB_DESKTOPGL")) {   // GLES 2 game: a real ES 2.0 context (EGL), as on phones
+    if (RB_GLES_MODE != 1 && !getenv("RB_DESKTOPGL")) {   // GLES 2 game: a real ES 2.0 context (EGL), as on phones
         g_es = true;
         SDL_SetHint(SDL_HINT_VIDEO_X11_FORCE_EGL, "1");
         SDL_SetHint(SDL_HINT_OPENGL_ES_DRIVER, "1");
@@ -393,12 +461,26 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
     uint32_t onload = lib_sym(unity, "JNI_OnLoad");
     if (onload) logf("JNI_OnLoad -> 0x%x", call(onload, {jni::vm(), 0}));
 
+    { rt::start_thread_dumper(); }
     // ---- UnityPlayer constructor and init(), in the original order
+    g_u4 = java::player_has("nativeRecreateGfxState", "(Landroid/view/Surface;)V");
+    bool u34 = false;
+    if (g_u4) {
+        // Unity 4.x: the engine owns EGL (rt_egl: bound to our context) and its expansion file comes as a 2nd nativeFile
+        P("nativeFile", "(Ljava/lang/String;)V", {JV::O(jni::jstr(plat::apk_path))});
+        P("initJni", "(Landroid/content/Context;)V", {JV::O(java::activity())});
+        P("nativeInitWWW", "(Ljava/lang/Class;)V", {JV::O(jni::find_class("com/unity3d/player/WWW")->class_obj)});
+        P("nativeSetDefaultDisplay", "(I)V", {JV::I(0)});
+        P("nativeRecreateGfxState", "(Landroid/view/Surface;)V", {JV::O(java::surface())});
+        P("nativeResize", "(IIII)V", {JV::I(plat::width), JV::I(plat::height), JV::I(plat::width), JV::I(plat::height)});
+        P("nativeFocusChanged", "(Z)V", {JV::Z(true)});
+        P("nativeResume", "()V");
+    } else {
     P("nativeFile", "(Ljava/lang/String;)V", {JV::O(jni::jstr(plat::apk_path))});
     P("initJni", "()V");
     jni::call_native(jni::find_class("com/unity3d/player/PlayerPrefs"), java::prefs_object().get(), "InitPlayerPrefs", "()V", {});
     P("nativeInitWWW", "(Ljava/lang/Class;)V", {JV::O(jni::find_class("com/unity3d/player/WWW")->class_obj)});
-    const bool u34 = java::player_has("nativeInit", "(I[BIIIII)V");     // Unity 3.4: splash pixels passed in
+    u34 = java::player_has("nativeInit", "(I[BIIIII)V");     // Unity 3.4: splash pixels passed in
     if (u34) {
         // nativeInit(glesMode, RGB565 splash, texW, texH, w, h, splashMode): a black 2x2 splash
         jni::Ref px = jni::new_prim_array('B', 8);
@@ -411,6 +493,7 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
     P("nativeRecreateGfxState", "()V");                        // onSurfaceCreated
     P("nativeResize", "(IIII)V", {JV::I(plat::width), JV::I(plat::height), JV::I(plat::width), JV::I(plat::height)});
     if (!u34) P("nativeFocusChanged", "(Z)V", {JV::Z(true)});
+    }
 
     bool started = false;
     int frame = 0;
@@ -489,7 +572,7 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
             if (accel) {
                 SDL_SensorUpdate(); SDL_SensorGetData(accel, a, 3);   // device-natural axes, like Android's SensorEvent (Unity rotates them itself)
             }
-            P("nativeSensor", "(FFFJ)V", {JV::F(a[0]), JV::F(a[1]), JV::F(a[2]), JV::J(now * 1000000)});
+            if (!g_u4) P("nativeSensor", "(FFFJ)V", {JV::F(a[0]), JV::F(a[1]), JV::F(a[2]), JV::J(now * 1000000)});
         }
         plat::run_posted();
         if (!scr.empty()) {
@@ -524,6 +607,14 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
           gl_trace_on = frame == trace_frame || (trace_frame < -1 && frame < -trace_frame); }
         bool ok = P("nativeRender", "()Z").z();
         if (!ok) { logf("nativeRender returned false: quitting"); break; }
+        if (!started && g_u4) {
+            started = true;
+            jni::JClass *fk = jni::find_class("org/fmod/FMODAudioDevice");      // UnityPlayer.resume(): FMOD output
+            jni::Ref dev = jni::new_obj(fk); jni::Args none;
+            fk->methods["<init>()V"]->impl(dev.get(), none);
+            fk->methods["start()V"]->impl(dev.get(), none);
+            logf("game loop started after %u ms", SDL_GetTicks() - t0);
+        }
         if (!started) {
             P("unityAndroidInit", "(Ljava/lang/String;Ljava/lang/String;)V", {JV::O(jni::jstr("assets/bin/")), JV::O(jni::jstr(plat::data_dir + "/lib"))});
             if (!u34) P("unityAndroidPrepareGameLoop", "()V");
@@ -539,6 +630,7 @@ __attribute__((visibility("default"))) int main(int argc, char **argv) {
             fk->methods["start()V"]->impl(dev.get(), none);
             logf("game loop started after %u ms", SDL_GetTicks() - t0);
         }
+        upscale_backbuffer(plat::width, plat::height);
         gl_draw_bars(surf_w, surf_h);
         SDL_GL_SwapWindow(win);
         frame++;

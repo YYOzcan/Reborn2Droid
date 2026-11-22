@@ -22,11 +22,12 @@ The same build also runs as a native **Linux** program.
 
 | | |
 |---|---|
-| Supported engine | Unity 3.x / 4.x **Mono** builds for `armeabi-v7a` (`libunity.so` + `libmono.so`) |
+| Supported engine | Unity 3.4 – 4.3 **Mono** builds for `armeabi-v7a` / `armeabi-vfp` (`libunity.so` + `libmono.so`) |
 | Output | Android 7.0 – 17+ (arm64-v8a, x86_64); Linux x86_64 |
 | Verified games | **Air Attack HD** 1.5.1 (Art In Games, Unity 3.5.7, armeabi-v7a) — 60 fps on a Galaxy A52 |
 | | **Battle Robots!** 1.5.1 (COLOPL, Unity 3.5.6, armeabi-vfp / ARMv5TE) — 60 fps, GC hitches removed |
 | | **Sleepy Jack** 9012 (Silvertree Media, Unity 3.4.2, armeabi-v7a, GLES 2) — encrypted asset bundle handled by the profile |
+| | **Calling All Mixels** 2.0.0 (Cartoon Network, Unity 4.3, armeabi-v7a) — 553 MB OBB merged into the APK (`--obb`) |
 
 Reborn2Droid contains **no game code or data**. You provide your own APK; everything derived
 from it stays in `work/` on your machine and must not be redistributed.

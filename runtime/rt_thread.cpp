@@ -70,6 +70,26 @@ Thread *main_thread_create(size_t guest_stack) {
     return t;
 }
 CPU *cpu() { return self_thread()->c; }
+// dev: RB_DUMP=<seconds> logs every guest thread's pc/lr/sp periodically (pc exact in DEBUG=1 builds)
+void start_thread_dumper() {
+    static int every = getenv("RB_DUMP") ? atoi(getenv("RB_DUMP")) : 0;
+    if (every <= 0) return;
+    std::thread([] {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(every));
+            std::lock_guard<std::mutex> g(threads_mu);
+            logf("---- guest threads");
+            for (auto &kv : threads_by_self) {
+                Thread *t = kv.second; CPU *c = t->c; if (!c) continue;
+                logf("  tid %u%s pc %s  lr %s  sp %08x", t->tid, t->finished ? " (done)" : "", sym_name(c->r[15]), sym_name(c->r[14]), c->r[13]);
+                for (uint32_t a = c->r[13], n = 0; n < 6 && a < c->r[13] + 1024; a += 4) {
+                    uint32_t v = R32(a);
+                    if (v >= 0x10000000 && v < 0x12000000) { logf("      stack+%x: %s", a - c->r[13], sym_name(v)); n++; }
+                }
+            }
+        }
+    }).detach();
+}
 Thread *thread_by_guest(uint32_t s) {
     std::lock_guard<std::mutex> g(threads_mu);
     auto it = threads_by_self.find(s);
@@ -348,7 +368,7 @@ static uint32_t key_dtor[128];
 static bool key_used[128];
 IMP(pthread_key_create) {
     std::lock_guard<std::mutex> g(key_mu);
-    for (uint32_t k = 1; k < 128; k++) if (!key_used[k]) { key_used[k] = true; key_dtor[k] = A(1); W32(A(0), k); RET(0); return; }
+    for (uint32_t k = 1; k < 128; k++) if (!key_used[k]) { key_used[k] = true; key_dtor[k] = A(1); W32(A(0), k); if (verbose > 2) logf("pthread_key_create -> %u at %08x from %s", k, A(0), sym_name(c->r[14])); RET(0); return; }
     RET(G_EAGAIN);
 }
 IMP(pthread_key_delete) { std::lock_guard<std::mutex> g(key_mu); if (A(0) < 128) key_used[A(0)] = false; RET(0); }
@@ -530,7 +550,14 @@ static int sem_wait_impl(CPU *c, uint32_t sp, int64_t deadline_ns, bool try_only
     int rc = 0;
     while (s->count == 0) {
         if (try_only) { rc = G_EAGAIN; break; }
-        if (c->sigpending) { rc = G_EINTR; break; }
+        if (c->sigpending) {                 // old bionic restarts sem_wait after a handler (no EINTR)
+            lk.unlock();
+            { std::lock_guard<std::mutex> g(t->mu); t->waiting_on = nullptr; t->waiting_mu = nullptr; }
+            guest_poll(c);
+            { std::lock_guard<std::mutex> g(t->mu); t->waiting_on = &s->cv; t->waiting_mu = &s->m; }
+            lk.lock();
+            continue;
+        }
         auto step = std::chrono::milliseconds(100);
         if (deadline_ns) {
             int64_t now = host::now_us() * 1000;
@@ -541,7 +568,6 @@ static int sem_wait_impl(CPU *c, uint32_t sp, int64_t deadline_ns, bool try_only
     if (!rc) s->count--;
     lk.unlock();
     { std::lock_guard<std::mutex> g(t->mu); t->waiting_on = nullptr; t->waiting_mu = nullptr; }
-    if (rc == G_EINTR) guest_poll(c);
     return rc;
 }
 IMP(sem_init) { W32(A(0), 0); GSem *s = get_obj<GSem>(A(0), mk_sem); s->count = A(2); RET(0); }

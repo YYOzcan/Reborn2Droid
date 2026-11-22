@@ -1,3 +1,6 @@
+#include <unistd.h>
+#include <sys/stat.h>
+#include <map>
 // The Java half of the original APK, reimplemented: Android framework bits that libunity touches,
 // com.unity3d.player.* (UnityPlayer, PlayerPrefs, ReflectionHelper, WWW, UnityJavaRunnable),
 // org.fmod.FMODAudioDevice, and the game's plugins (AdMob, Flurry, Moga, OpenFeint: all offline no-ops).
@@ -106,9 +109,20 @@ void fmod_fill(int16_t *out, int frames) {
 
 // ================================================================== public helpers for the host loop
 namespace java {
+Ref activity() { return the_activity; }
+// Unity 4.x input: android.view.MotionEvent objects handed to nativeInjectEvent
+Ref motion_event(int pointer_id, float x, float y, int action, int64_t t_ms) {
+    static JClass *k = find_class("android/view/MotionEvent");
+    Ref e = new_obj(k);
+    set_field(e.get(), "id", JV::I(pointer_id)); set_field(e.get(), "x", JV::F(x)); set_field(e.get(), "y", JV::F(y));
+    set_field(e.get(), "action", JV::I(action)); set_field(e.get(), "t", JV::J(t_ms));
+    return e;
+}
+Ref surface() { static Ref s = new_obj(find_class("android/view/Surface")); return s; }
 void fmod_start34() { Ref dev = new_obj(K_fmod); fmod34_start(dev.get()); static Ref keep; keep = dev; }
 Ref player() { return the_player; }
 JV player_native(const char *name, const char *sig, const Args &a) {
+    if (verbose > 1 && strcmp(name, "nativeRender")) logf("-> UnityPlayer.%s%s", name, sig);
     return call_native(K_player, the_player.get(), name, sig, a);
 }
 bool player_has(const char *name, const char *sig) { return has_native(K_player, name, sig); }
@@ -130,13 +144,20 @@ static void def_android() {
     def_method(string, "length", "()I", [](Obj *s, Args &) { return JV::I((int)s->str.size()); });
     JClass *cls = def_class("java/lang/Class");
     def_method(cls, "getName", "()Ljava/lang/String;", [](Obj *s, Args &) { std::string n = s->as_class ? s->as_class->name : ""; for (char &ch : n) if (ch == '/') ch = '.'; return str(n); });
-    def_static(cls, "forName", "(Ljava/lang/String;)Ljava/lang/Class;", [](Obj *, Args &a) {
+    // Class.forName: known classes, else a logged stub for third-party plugin code (the game's Java plugins
+    // are not part of this port); the JDK and Android frameworks stay strict
+    auto for_name = [](Obj *, Args &a) {
         std::string n = a[0].s(); for (char &ch : n) if (ch == '.') ch = '/';
         JClass *k = find_class(n);
         if (!k) k = stub_class(n);
+        if (!k && n.rfind("java/", 0) != 0 && n.rfind("javax/", 0) != 0 && n.rfind("dalvik/", 0) != 0) {
+            k = def_class(n, "java/lang/Object", true); logf("JNI: plugin class %s is provided as a stub", n.c_str());
+        }
         if (!k) { throw_new("java/lang/ClassNotFoundException", n); return nul(); }
         return JV::O(k->class_obj);
-    });
+    };
+    def_static(cls, "forName", "(Ljava/lang/String;)Ljava/lang/Class;", for_name);
+    def_static(cls, "forName", "(Ljava/lang/String;)Ljava/lang/Object;", for_name);
     def_class("java/lang/Throwable");
     def_class("java/lang/Exception", "java/lang/Throwable");
     def_class("java/lang/RuntimeException", "java/lang/Exception");
@@ -216,6 +237,37 @@ static void def_android() {
     def_method(loc, "getISO3Country", "()Ljava/lang/String;", [](Obj *s, Args &) { return str(s->str.size() > 3 ? s->str.substr(3, 2) : "USA"); });
     def_method(loc, "getDisplayLanguage", "()Ljava/lang/String;", [](Obj *s, Args &) { return str(s->str.substr(0, 2)); });
     def_method(loc, "getDisplayName", "()Ljava/lang/String;", [](Obj *s, Args &) { return str(s->str); });
+    // input events for Unity 4.x (single pointer per event: what the host produces)
+    JClass *ie = def_class("android/view/InputEvent", "java/lang/Object", true);
+    JClass *me = def_class("android/view/MotionEvent", "android/view/InputEvent", true);
+    def_method(me, "getAction", "()I", [](Obj *s, Args &) { return JV::I(get_field(s, "action").i()); });
+    def_method(me, "getActionMasked", "()I", [](Obj *s, Args &) { return JV::I(get_field(s, "action").i() & 0xff); });
+    def_method(me, "getActionIndex", "()I", [](Obj *, Args &) { return JV::I(0); });
+    def_method(me, "getPointerCount", "()I", [](Obj *, Args &) { return JV::I(1); });
+    def_method(me, "getPointerId", "(I)I", [](Obj *s, Args &) { return JV::I(get_field(s, "id").i()); });
+    def_method(me, "findPointerIndex", "(I)I", [](Obj *s, Args &a) { return JV::I(a[0].i() == get_field(s, "id").i() ? 0 : -1); });
+    def_method(me, "getX", "()F", [](Obj *s, Args &) { return get_field(s, "x"); });
+    def_method(me, "getY", "()F", [](Obj *s, Args &) { return get_field(s, "y"); });
+    def_method(me, "getX", "(I)F", [](Obj *s, Args &) { return get_field(s, "x"); });
+    def_method(me, "getY", "(I)F", [](Obj *s, Args &) { return get_field(s, "y"); });
+    def_method(me, "getRawX", "()F", [](Obj *s, Args &) { return get_field(s, "x"); });
+    def_method(me, "getRawY", "()F", [](Obj *s, Args &) { return get_field(s, "y"); });
+    def_method(me, "getPressure", "(I)F", [](Obj *, Args &) { return JV::F(1.0f); });
+    def_method(me, "getSize", "(I)F", [](Obj *, Args &) { return JV::F(0.1f); });
+    def_method(me, "getTouchMajor", "(I)F", [](Obj *, Args &) { return JV::F(10.0f); });
+    def_method(me, "getEventTime", "()J", [](Obj *s, Args &) { return get_field(s, "t"); });
+    def_method(me, "getDownTime", "()J", [](Obj *s, Args &) { return get_field(s, "t"); });
+    def_method(me, "getHistorySize", "()I", [](Obj *, Args &) { return JV::I(0); });
+    def_method(me, "getSource", "()I", [](Obj *, Args &) { return JV::I(4098); });       // SOURCE_TOUCHSCREEN
+    def_method(me, "getDeviceId", "()I", [](Obj *, Args &) { return JV::I(1); });
+    def_method(me, "getToolType", "(I)I", [](Obj *, Args &) { return JV::I(1); });       // TOOL_TYPE_FINGER
+    def_method(me, "getButtonState", "()I", [](Obj *, Args &) { return JV::I(0); });
+    def_method(me, "getMetaState", "()I", [](Obj *, Args &) { return JV::I(0); });
+    def_method(me, "getAxisValue", "(II)F", [](Obj *s, Args &a) { return a[0].i() == 0 ? get_field(s, "x") : a[0].i() == 1 ? get_field(s, "y") : JV::F(0); });
+    def_method(me, "recycle", "()V", [](Obj *, Args &) { return nul(); });
+    (void)ie;
+    def_class("android/view/KeyEvent", "android/view/InputEvent", true);
+    def_class("android/view/Surface", "java/lang/Object", true);
     JClass *map = def_class("java/util/HashMap");
     def_method(map, "<init>", "()V", [](Obj *, Args &) { return nul(); });
     def_method(map, "<init>", "(I)V", [](Obj *, Args &) { return nul(); });
@@ -252,6 +304,143 @@ static void def_unity() {
         });
         return nul();
     });
+    // ---- Context / Activity services that Unity 4.x calls from native code
+    {
+        JClass *ctx = find_class("android/content/Context");
+        const char *svc[][2] = {{"DISPLAY_SERVICE", "display"}, {"WINDOW_SERVICE", "window"}, {"SENSOR_SERVICE", "sensor"},
+                                {"VIBRATOR_SERVICE", "vibrator"}, {"CONNECTIVITY_SERVICE", "connectivity"}, {"POWER_SERVICE", "power"},
+                                {"AUDIO_SERVICE", "audio"}, {"INPUT_METHOD_SERVICE", "input_method"}, {"ACTIVITY_SERVICE", "activity"},
+                                {"TELEPHONY_SERVICE", "phone"}, {"LOCATION_SERVICE", "location"}, {"INPUT_SERVICE", "input"}};
+        for (auto &kv : svc) def_field(ctx, kv[0], "Ljava/lang/String;", true, str(kv[1]));
+        JClass *ai = def_class("android/content/pm/ActivityInfo", "java/lang/Object", true);
+        const char *ori[] = {"SCREEN_ORIENTATION_LANDSCAPE", "SCREEN_ORIENTATION_PORTRAIT", "SCREEN_ORIENTATION_USER", "SCREEN_ORIENTATION_BEHIND",
+                             "SCREEN_ORIENTATION_SENSOR", "SCREEN_ORIENTATION_NOSENSOR", "SCREEN_ORIENTATION_SENSOR_LANDSCAPE",
+                             "SCREEN_ORIENTATION_SENSOR_PORTRAIT", "SCREEN_ORIENTATION_REVERSE_LANDSCAPE", "SCREEN_ORIENTATION_REVERSE_PORTRAIT",
+                             "SCREEN_ORIENTATION_FULL_SENSOR"};
+        for (int k = 0; k < 11; k++) def_field(ai, ori[k], "I", true, JV::I(k));
+        def_field(ai, "SCREEN_ORIENTATION_UNSPECIFIED", "I", true, JV::I(-1));
+        // display
+        JClass *disp = def_class("android/view/Display", "java/lang/Object", true);
+        static Ref the_display = new_obj(disp);
+        def_method(disp, "getRotation", "()I", [](Obj *, Args &) { return JV::I(0); });
+        def_method(disp, "getOrientation", "()I", [](Obj *, Args &) { return JV::I(0); });
+        def_method(disp, "getDisplayId", "()I", [](Obj *, Args &) { return JV::I(0); });
+        def_method(disp, "getWidth", "()I", [](Obj *, Args &) { return JV::I(plat::width); });
+        def_method(disp, "getHeight", "()I", [](Obj *, Args &) { return JV::I(plat::height); });
+        def_method(disp, "getRefreshRate", "()F", [](Obj *, Args &) { return JV::F(60.0f); });
+        JClass *dm = def_class("android/util/DisplayMetrics", "java/lang/Object", true);
+        def_method(dm, "<init>", "()V", [](Obj *, Args &) { return nul(); });
+        auto fill = [](Obj *, Args &a) {
+            Obj *m = a[0].o.get(); if (!m) return nul();
+            set_field(m, "widthPixels", JV::I(plat::width)); set_field(m, "heightPixels", JV::I(plat::height));
+            set_field(m, "density", JV::F(plat::dpi / 160.0f)); set_field(m, "densityDpi", JV::I((int)plat::dpi));
+            set_field(m, "scaledDensity", JV::F(plat::dpi / 160.0f)); set_field(m, "xdpi", JV::F(plat::dpi)); set_field(m, "ydpi", JV::F(plat::dpi));
+            return nul();
+        };
+        def_method(disp, "getMetrics", "(Landroid/util/DisplayMetrics;)V", fill);
+        def_method(disp, "getRealMetrics", "(Landroid/util/DisplayMetrics;)V", fill);
+        JClass *dmgr = def_class("android/hardware/display/DisplayManager", "java/lang/Object", true);
+        def_method(dmgr, "getDisplay", "(I)Landroid/view/Display;", [](Obj *, Args &) { return JV::O(the_display); });
+        def_method(dmgr, "getDisplays", "()[Landroid/view/Display;", [](Obj *, Args &) {
+            Ref arr = new_obj_array(find_class("android/view/Display"), 1); arr->objs[0] = the_display; return JV::O(arr); });
+        JClass *wm = def_class("android/view/WindowManager", "java/lang/Object", true);
+        def_method(wm, "getDefaultDisplay", "()Landroid/view/Display;", [](Obj *, Args &) { return JV::O(the_display); });
+        def_method(ctx, "getWindowManager", "()Landroid/view/WindowManager;", [](Obj *, Args &) {
+            static Ref w = new_obj(find_class("android/view/WindowManager")); return JV::O(w); });
+        def_method(ctx, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", [](Obj *, Args &a) {
+            std::string n = a[0].s();
+            static std::map<std::string, Ref> objs;
+            Ref &o = objs[n];
+            if (!o) {
+                const char *k = n == "display" ? "android/hardware/display/DisplayManager" : n == "window" ? "android/view/WindowManager"
+                              : n == "power" ? "android/os/PowerManager" : nullptr;
+                o = new_obj(k ? find_class(k) : def_class("android/app/Service_" + n, "java/lang/Object", true));
+            }
+            return JV::O(o);
+        });
+        // files: java.io.File carries its path in the object's string
+        JClass *file = def_class("java/io/File", "java/lang/Object", true);
+        auto mkfile = [](const std::string &p) { Ref f = new_obj(find_class("java/io/File")); f->str = p; return JV::O(f); };
+        def_method(file, "<init>", "(Ljava/lang/String;)V", [](Obj *s, Args &a) { s->str = a[0].s(); return nul(); });
+        for (const char *m : {"getPath", "getAbsolutePath", "getCanonicalPath", "toString"})
+            def_method(file, m, "()Ljava/lang/String;", [](Obj *s, Args &) { return str(s->str); });
+        def_method(file, "exists", "()Z", [](Obj *s, Args &) { return JV::Z(access(s->str.c_str(), F_OK) == 0); });
+        def_method(file, "isDirectory", "()Z", [](Obj *s, Args &) { struct stat st; return JV::Z(stat(s->str.c_str(), &st) == 0 && S_ISDIR(st.st_mode)); });
+        def_method(file, "mkdirs", "()Z", [](Obj *s, Args &) { std::string c; for (char ch : s->str + "/") { if (ch == '/' && !c.empty()) mkdir(c.c_str(), 0755); c += ch; } return JV::Z(true); });
+        def_method(file, "canWrite", "()Z", [](Obj *, Args &) { return JV::Z(true); });
+        def_method(ctx, "getFilesDir", "()Ljava/io/File;", [mkfile](Obj *, Args &) { return mkfile(plat::files_dir); });
+        def_method(ctx, "getCacheDir", "()Ljava/io/File;", [mkfile](Obj *, Args &) { return mkfile(plat::cache_dir); });
+        def_method(ctx, "getExternalFilesDir", "(Ljava/lang/String;)Ljava/io/File;", [mkfile](Obj *, Args &) { return mkfile(plat::files_dir); });
+        def_method(ctx, "getExternalCacheDir", "()Ljava/io/File;", [mkfile](Obj *, Args &) { return mkfile(plat::cache_dir); });
+        def_method(ctx, "getObbDir", "()Ljava/io/File;", [mkfile](Obj *, Args &) { return mkfile(plat::files_dir + "/obb"); });
+        def_method(ctx, "getPackageName", "()Ljava/lang/String;", [](Obj *, Args &) { return str(plat::package_name); });
+        def_method(ctx, "getPackageCodePath", "()Ljava/lang/String;", [](Obj *, Args &) { return str(plat::apk_path); });
+        def_method(ctx, "getPackageResourcePath", "()Ljava/lang/String;", [](Obj *, Args &) { return str(plat::apk_path); });
+        def_method(ctx, "getApplicationContext", "()Landroid/content/Context;", [](Obj *, Args &) { return JV::O(the_activity); });
+        JClass *envc = def_class("android/os/Environment", "java/lang/Object", true);
+        def_static(envc, "getExternalStorageState", "()Ljava/lang/String;", [](Obj *, Args &) { return str("mounted"); });
+        def_static(envc, "getExternalStorageDirectory", "()Ljava/io/File;", [mkfile](Obj *, Args &) { return mkfile(plat::files_dir); });
+        def_static(envc, "getDataDirectory", "()Ljava/io/File;", [mkfile](Obj *, Args &) { return mkfile(plat::data_dir); });
+        def_method(def_class("android/content/Intent", "java/lang/Object", true), "getExtras", "()Landroid/os/Bundle;", [](Obj *, Args &) { return nul(); });
+        def_method(def_class("android/os/PowerManager$WakeLock", "java/lang/Object", true), "isHeld", "()Z", [](Obj *, Args &) { return JV::Z(false); });
+        def_method(ctx, "getRequestedOrientation", "()I", [](Obj *, Args &) { return JV::I(plat::requested_orientation()); });
+        def_method(ctx, "setRequestedOrientation", "(I)V", [](Obj *, Args &a) { plat::set_orientation(a[0].i()); return nul(); });
+        def_method(ctx, "checkCallingOrSelfPermission", "(Ljava/lang/String;)I", [](Obj *, Args &) { return JV::I(0); });
+        def_method(ctx, "checkPermission", "(Ljava/lang/String;II)I", [](Obj *, Args &) { return JV::I(0); });
+        JClass *pwr = def_class("android/os/PowerManager", "java/lang/Object", true);
+        def_class("android/os/PowerManager$WakeLock", "java/lang/Object", true);
+        def_method(pwr, "newWakeLock", "(ILjava/lang/String;)Landroid/os/PowerManager$WakeLock;", [](Obj *, Args &) {
+            return JV::O(new_obj(find_class("android/os/PowerManager$WakeLock"))); });
+        // input devices: one touchscreen
+        JClass *idev = def_class("android/view/InputDevice", "java/lang/Object", true);
+        def_static(idev, "getDeviceIds", "()[I", [](Obj *, Args &) {
+            Ref a = new_prim_array('I', 1); W32(a->arr_data, 1); return JV::O(a); });
+        def_static(idev, "getDevice", "(I)Landroid/view/InputDevice;", [](Obj *, Args &a) {
+            static Ref d = new_obj(find_class("android/view/InputDevice")); return JV::O(a[0].i() == 1 ? d : nullptr); });
+        def_method(idev, "getSources", "()I", [](Obj *, Args &) { return JV::I(4098); });
+        def_method(idev, "getName", "()Ljava/lang/String;", [](Obj *, Args &) { return str("touchscreen"); });
+        def_method(idev, "getId", "()I", [](Obj *, Args &) { return JV::I(1); });
+        def_method(idev, "getKeyboardType", "()I", [](Obj *, Args &) { return JV::I(0); });
+        def_method(idev, "getMotionRanges", "()Ljava/util/List;", [](Obj *, Args &) { return nul(); });
+        def_class("java/lang/ClassCastException", "java/lang/RuntimeException");
+        def_class("java/lang/IllegalArgumentException", "java/lang/RuntimeException");
+        def_class("java/lang/NullPointerException", "java/lang/RuntimeException");
+        // package manager / intent: an installed, sideloaded app without extras
+        JClass *pm = def_class("android/content/pm/PackageManager", "java/lang/Object", true);
+        def_method(pm, "hasSystemFeature", "(Ljava/lang/String;)Z", [](Obj *, Args &a) {
+            std::string f = a[0].s(); return JV::Z(f == "android.hardware.touchscreen" || f == "android.hardware.touchscreen.multitouch" ||
+                                                    f == "android.hardware.touchscreen.multitouch.distinct" || f == "android.hardware.sensor.accelerometer"); });
+        def_method(pm, "getInstallerPackageName", "(Ljava/lang/String;)Ljava/lang/String;", [](Obj *, Args &) { return str("com.android.vending"); });
+        def_method(ctx, "getPackageManager", "()Landroid/content/pm/PackageManager;", [](Obj *, Args &) {
+            static Ref p = new_obj(find_class("android/content/pm/PackageManager")); return JV::O(p); });
+        JClass *intent = def_class("android/content/Intent", "java/lang/Object", true);
+        def_method(intent, "getAction", "()Ljava/lang/String;", [](Obj *, Args &) { return str("android.intent.action.MAIN"); });
+        def_method(ctx, "getIntent", "()Landroid/content/Intent;", [](Obj *, Args &) {
+            static Ref i = new_obj(find_class("android/content/Intent")); return JV::O(i); });
+        // SharedPreferences (Unity 4.x PlayerPrefs) on the host prefs store
+        JClass *sp = def_class("android/content/SharedPreferences", "java/lang/Object", true);
+        JClass *ed = def_class("android/content/SharedPreferences$Editor", "java/lang/Object", true);
+        static Ref the_sp = new_obj(sp), the_ed = new_obj(ed);
+        def_method(ctx, "getSharedPreferences", "(Ljava/lang/String;I)Landroid/content/SharedPreferences;", [](Obj *, Args &) { return JV::O(the_sp); });
+        def_method(ctx, "getPreferences", "(I)Landroid/content/SharedPreferences;", [](Obj *, Args &) { return JV::O(the_sp); });
+        def_method(sp, "contains", "(Ljava/lang/String;)Z", [](Obj *, Args &a) { return JV::Z(plat::Prefs::has(a[0].s())); });
+        def_method(sp, "getInt", "(Ljava/lang/String;I)I", [](Obj *, Args &a) { return JV::I(plat::Prefs::get_int(a[0].s(), a[1].i())); });
+        def_method(sp, "getLong", "(Ljava/lang/String;J)J", [](Obj *, Args &a) { return JV::J(plat::Prefs::get_int(a[0].s(), (int)a[1].j())); });
+        def_method(sp, "getBoolean", "(Ljava/lang/String;Z)Z", [](Obj *, Args &a) { return JV::Z(plat::Prefs::get_int(a[0].s(), a[1].i()) != 0); });
+        def_method(sp, "getFloat", "(Ljava/lang/String;F)F", [](Obj *, Args &a) { return JV::F(plat::Prefs::get_float(a[0].s(), a[1].f())); });
+        def_method(sp, "getString", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", [](Obj *, Args &a) {
+            std::string k = a[0].s(); if (!plat::Prefs::has(k)) return JV::O(a[1].o); return str(plat::Prefs::get_string(k, "")); });
+        def_method(sp, "edit", "()Landroid/content/SharedPreferences$Editor;", [](Obj *, Args &) { return JV::O(the_ed); });
+        def_method(ed, "putInt", "(Ljava/lang/String;I)Landroid/content/SharedPreferences$Editor;", [](Obj *, Args &a) { plat::Prefs::set_int(a[0].s(), a[1].i()); return JV::O(the_ed); });
+        def_method(ed, "putLong", "(Ljava/lang/String;J)Landroid/content/SharedPreferences$Editor;", [](Obj *, Args &a) { plat::Prefs::set_int(a[0].s(), (int)a[1].j()); return JV::O(the_ed); });
+        def_method(ed, "putBoolean", "(Ljava/lang/String;Z)Landroid/content/SharedPreferences$Editor;", [](Obj *, Args &a) { plat::Prefs::set_int(a[0].s(), a[1].i() & 1); return JV::O(the_ed); });
+        def_method(ed, "putFloat", "(Ljava/lang/String;F)Landroid/content/SharedPreferences$Editor;", [](Obj *, Args &a) { plat::Prefs::set_float(a[0].s(), a[1].f()); return JV::O(the_ed); });
+        def_method(ed, "putString", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/SharedPreferences$Editor;", [](Obj *, Args &a) { plat::Prefs::set_string(a[0].s(), a[1].s()); return JV::O(the_ed); });
+        def_method(ed, "remove", "(Ljava/lang/String;)Landroid/content/SharedPreferences$Editor;", [](Obj *, Args &a) { plat::Prefs::remove(a[0].s()); return JV::O(the_ed); });
+        def_method(ed, "clear", "()Landroid/content/SharedPreferences$Editor;", [](Obj *, Args &) { plat::Prefs::clear(); return JV::O(the_ed); });
+        def_method(ed, "commit", "()Z", [](Obj *, Args &) { plat::Prefs::sync(); return JV::Z(true); });
+        def_method(ed, "apply", "()V", [](Obj *, Args &) { plat::Prefs::sync(); return nul(); });
+    }
     // Moga gamepad SDK: a controller that is never connected (getState* -> 0, key codes -> ACTION_UP)
     static JClass *moga = def_class("com/bda/controller/Controller", "java/lang/Object", true);
     static Ref moga_obj = new_obj(moga);
@@ -280,6 +469,29 @@ static void def_unity() {
     def_field(K_player, "currentActivity", "Landroid/app/Activity;", true, JV::O(the_activity));
     the_player = new_obj(K_player);
     auto M = [](const char *n, const char *s, Impl f) { def_method(K_player, n, s, std::move(f)); };
+    // Screen.SetResolution on Unity 4.x: the game renders a smaller backbuffer, the host scales it up
+    M("setScreenSize", "(IIZ)V", [](Obj *, Args &a) {
+        extern void host_set_backbuffer(int w, int h);
+        logf("setScreenSize %dx%d", a[0].i(), a[1].i());
+        host_set_backbuffer(a[0].i(), a[1].i());
+        return nul();
+    });
+    M("getSplashMode", "()I", [](Obj *, Args &) { return JV::I(RB_SPLASH_MODE); });
+    M("triggerResizeCall", "()V", [](Obj *, Args &) {        // the engine asks for the surface size again
+        plat::post([] {
+            call_native(K_player, the_player.get(), "nativeResize", "(IIII)V",
+                        {JV::I(plat::width), JV::I(plat::height), JV::I(plat::width), JV::I(plat::height)});
+            // input scaling is derived on (re)gaining focus: refresh it with the real size
+            call_native(K_player, the_player.get(), "nativeFocusChanged", "(Z)V", {JV::Z(false)});
+            call_native(K_player, the_player.get(), "nativeFocusChanged", "(Z)V", {JV::Z(true)});
+        });
+        return nul();
+    });
+    M("executeGLThreadJobs", "()V", [](Obj *, Args &) { return nul(); });
+    M("disableLogger", "()V", [](Obj *, Args &) { return nul(); });
+    M("getInternetReachability", "()I", [](Obj *, Args &) { return JV::I(0); });
+    M("getScreenTimeout", "()I", [](Obj *, Args &) { return JV::I(-1); });
+    M("getNumCameras", "()I", [](Obj *, Args &) { return JV::I(0); });
     M("getFilesDir", "()Ljava/lang/String;", [](Obj *, Args &) { return str(plat::files_dir); });
     M("getCacheDir", "()Ljava/lang/String;", [](Obj *, Args &) { return str(plat::cache_dir); });
     M("getPackageName", "()Ljava/lang/String;", [](Obj *, Args &) { return str(plat::package_name); });
@@ -336,6 +548,7 @@ static void def_unity() {
     M("closeCamera", "(I)V", [](Obj *, Args &) { return nul(); });
     M("showSoftInput", "(Ljava/lang/String;IZZZZLjava/lang/String;)V", [](Obj *, Args &) { return nul(); });
     M("showVideoPlayer", "(Ljava/lang/String;IIIZ)V", [](Obj *, Args &a) { logf("video playback requested (%s): skipped", a[0].s().c_str()); return nul(); });
+    M("showVideoPlayer", "(Ljava/lang/String;IIIZII)V", [](Obj *, Args &a) { logf("video playback requested (%s): skipped", a[0].s().c_str()); return nul(); });
     M("reportSoftInputStr", "(Ljava/lang/String;I)V", [](Obj *, Args &) { return nul(); });
     M("forwardMotionEventToDalvik", "(JJII[I[FIFFIIIII[J[F)V", [](Obj *, Args &) { return nul(); });
     M("onNativeKey", "(JJIIIIIIIIZ)Z", [](Obj *, Args &) { return JV::Z(false); });
@@ -370,6 +583,14 @@ static void def_unity() {
     def_static(rh, "getConstructorID", "(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/reflect/Constructor;", [](Obj *, Args &a) {
         Ref m = reflect_method(a[0].o ? a[0].o->as_class : nullptr, "<init>", a[1].s(), false);
         return JV::O(m);
+    });
+
+    // AndroidJavaProxy: an object of the interface type; calls on it are logged no-ops (plugin callbacks)
+    def_static(rh, "newProxyInstance", "(ILjava/lang/Class;)Ljava/lang/Object;", [](Obj *, Args &a) {
+        JClass *k = a[1].o && a[1].o->as_class ? a[1].o->as_class : find_class("java/lang/Object");
+        k->lenient = true;
+        Ref o = new_obj(k); set_field(o.get(), "proxy", a[0]);
+        return JV::O(o);
     });
 
     // ---- UnityJavaRunnable (AndroidJavaRunnable)

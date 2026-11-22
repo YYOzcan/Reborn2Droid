@@ -170,14 +170,15 @@ static inline void fcmp(CPU *c, double a, double b) {    /* sets FPSCR NZCV */
 }
 
 /* ---- runtime services used by generated code */
-void call_addr(CPU *c, uint32_t addr);                   /* indirect call / tail jump (interprets unknown code) */
+void call_addr(CPU *c, uint32_t addr);                   /* indirect call (interprets unknown code) */
+void jump_addr(CPU *c, uint32_t addr, uint32_t elr);    /* indirect jump out of a function body: ends at elr */
 void unimpl(CPU *c, uint32_t elr, uint32_t addr, const char *what);   /* continue in the interpreter */
 void guest_svc(CPU *c);                                  /* svc #0: Linux syscall */
 uint32_t guest_tls(CPU *c);                              /* TPIDRURO */
 void guest_poll(CPU *c);                                 /* deliver pending guest signals */
 
 /* indirect jump: a jump to our own return address is a return */
-#define JUMP(x) do { uint32_t _j = (x); if ((_j | 1u) == elr) return; call_addr(c, _j); return; } while (0)
+#define JUMP(x) do { uint32_t _j = (x); if ((_j | 1u) == elr) return; jump_addr(c, _j, elr); return; } while (0)
 
 /* debug builds record the guest PC of every instruction in r15 (crash reports) */
 #if defined(RB_TRACE)

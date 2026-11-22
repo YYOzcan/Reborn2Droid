@@ -4,6 +4,7 @@
     python3 reborn2droid.py build <game.apk> [targets...]     targets: android (default), linux, android-arm64, android-x86_64
     python3 reborn2droid.py info  <game.apk>                   show what Reborn2Droid sees in the APK
     ... build <game.apk> --variant cheat                       also apply profiles/<package>/prefs_cheat.txt
+    ... build <game.apk> --obb main.<ver>.<package>.obb         merge an expansion file into the game data
 
 The game's 32-bit ARM engine libraries are statically recompiled to portable C, compiled for the
 target, and run on a runtime that provides the Android/Java side the original code expects.
@@ -186,9 +187,10 @@ def game_data(apk, prof):
     ilp, prep = os.path.join(pdir, "ilpatch.txt"), os.path.join(pdir, "prepare.py")
     ilv = os.path.join(pdir, f"ilpatch_{prof['variant']}.txt") if prof.get("variant") else ""   # variant extras
     ilfiles = [f for f in (ilp, ilv) if f and os.path.exists(f)]
-    if not ilfiles and not os.path.exists(prep): return apk
+    obbs = prof.get("obb", [])                    # expansion files: their entries are merged into the game data
+    if not ilfiles and not os.path.exists(prep) and not obbs: return apk
     out = os.path.join(work_dir(prof), "game-data.apk")
-    if not stale(out, apk, prep, os.path.join(HERE, "ilpatch/Program.cs"), *ilfiles): return out
+    if not stale(out, apk, prep, os.path.join(HERE, "ilpatch/Program.cs"), *ilfiles, *obbs): return out
     print("== patching game data", flush=True)
     z = zipfile.ZipFile(apk); repl = {}
     if os.path.exists(prep):
@@ -229,6 +231,15 @@ def game_data(apk, prof):
                 ni = zipfile.ZipInfo(it.filename, it.date_time); ni.compress_type = zipfile.ZIP_STORED
                 zo.writestr(ni, data)
         for name, data in repl.items(): zo.writestr(name, data, zipfile.ZIP_STORED)
+        have = set(z.namelist())
+        for ob in obbs:                           # Unity reads assets/ from every file passed to it alike
+            with zipfile.ZipFile(ob) as zb:
+                n = 0
+                for it in zb.infolist():
+                    if it.filename in have or it.filename.endswith("/"): continue
+                    zi = zipfile.ZipInfo(it.filename, it.date_time); zi.compress_type = it.compress_type
+                    zo.writestr(zi, zb.read(it)); n += 1
+            print(f"   merged {n} entries of {os.path.basename(ob)}")
     run([os.path.join(build_tools(), "zipalign"), "-f", "-P", "16", "4", out + ".tmp", out])   # the engine maps stored entries
     os.remove(out + ".tmp")
     return out
@@ -257,7 +268,7 @@ def compile_target(wd, target, bd=None):
     os.makedirs(obj, exist_ok=True)
     cc, cxx, extra, ldflags, exe, sdl_inc = toolchain(target)
     opt = os.environ.get("OPT", "-O2").split()
-    dbg = ["-DRB_DEBUG"] if os.environ.get("DEBUG") else []
+    dbg = (["-DRB_TRACE"] if os.environ.get("TRACE") else ["-DRB_DEBUG"]) if os.environ.get("DEBUG") else []
     inc = ["-I" + os.path.join(HERE, "runtime"), "-I" + wd]
     jobs = []
     gflags = cc + opt + ["-w", "-fno-strict-aliasing", "-ffp-contract=off", "-fwrapv", "-g0"] + dbg + inc + extra
@@ -382,6 +393,8 @@ def main():
         for k, v in prof.items(): print(f"{k:14} {v}")
         return
     args = sys.argv[3:]
+    if "--obb" in args:                           # expansion file(s) (main.<version>.<package>.obb), merged into the APK
+        k = args.index("--obb"); prof["obb"] = [os.path.abspath(args[k + 1])]; del args[k:k + 2]
     if "--variant" in args:                       # e.g. --variant cheat: also apply profiles/<pkg>/prefs_cheat.txt
         k = args.index("--variant"); prof["variant"] = args[k + 1]; del args[k:k + 2]
     targets = args or ["android"]
